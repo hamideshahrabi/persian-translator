@@ -7,7 +7,6 @@ from dotenv import load_dotenv
 import requests
 import logging
 import json
-from openai import OpenAI
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
