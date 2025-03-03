@@ -1,0 +1,108 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Persian to English Translator</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            text-align: center;
+            background-color: #f5f5f5;
+        }
+        textarea {
+            width: 100%;
+            height: 100px;
+            margin: 10px 0;
+            padding: 10px;
+            font-size: 16px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            resize: vertical;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        #result {
+            margin-top: 20px;
+            padding: 15px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            min-height: 50px;
+            background-color: white;
+            font-size: 16px;
+        }
+        .loading {
+            color: #666;
+            font-style: italic;
+        }
+        .error {
+            color: #d32f2f;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <h1>Persian to English Translator</h1>
+    <textarea id="text" placeholder="Enter Persian text here..." dir="rtl"></textarea>
+    <br>
+    <button onclick="translateText()">Translate</button>
+    <div id="result"></div>
+
+    <script>
+        async function translateText() {
+            const text = document.getElementById('text').value;
+            const result = document.getElementById('result');
+            
+            if (!text.trim()) {
+                result.innerHTML = '<span class="error">Please enter some text to translate</span>';
+                return;
+            }
+            
+            result.innerHTML = '<span class="loading">Translating...</span>';
+            
+            try {
+                const response = await fetch('/translate', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ text: text })
+                });
+                
+                const data = await response.json();
+                
+                if (!response.ok) {
+                    throw new Error(data.detail || 'Translation failed');
+                }
+                
+                result.innerHTML = data.translation;
+            } catch (error) {
+                result.innerHTML = `<span class="error">❌ Error: ${error.message}</span>`;
+                console.error('Translation error:', error);
+            }
+        }
+
+        // Also allow translation when pressing Enter in the textarea
+        document.getElementById('text').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                translateText();
+            }
+        });
+    </script>
+</body>
+</html>
+    
