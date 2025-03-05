@@ -2,6 +2,10 @@
 .env
 .env.*
 
+# Google Cloud credentials
+**/clean-linker-448906-b1-aad79b28692e.json
+**/*.json
+
 # Python
 __pycache__/
 *.py[cod]
