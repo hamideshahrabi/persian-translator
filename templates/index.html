@@ -2,7 +2,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Persian to English Translator</title>
+    <title>Persian Text Editor and Translator</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -11,6 +11,17 @@
             padding: 20px;
             text-align: center;
             background-color: #f5f5f5;
+        }
+        .container {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        .text-section {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
         textarea {
             width: 100%;
@@ -22,6 +33,28 @@
             border-radius: 5px;
             resize: vertical;
         }
+        .edited-text {
+            width: 100%;
+            min-height: 50px;
+            margin: 10px 0;
+            padding: 10px;
+            font-size: 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 5px;
+            background-color: #f8f8f8;
+            text-align: right;
+            direction: rtl;
+        }
+        .explanation {
+            margin-top: 10px;
+            padding: 10px;
+            background-color: #e3f2fd;
+            border-radius: 5px;
+            font-size: 14px;
+            color: #1976D2;
+            text-align: left;
+            direction: ltr;
+        }
         button {
             padding: 10px 20px;
             font-size: 16px;
@@ -31,9 +64,16 @@
             border-radius: 5px;
             cursor: pointer;
             transition: background-color 0.3s;
+            margin: 5px;
         }
         button:hover {
             background-color: #45a049;
+        }
+        button.edit {
+            background-color: #2196F3;
+        }
+        button.edit:hover {
+            background-color: #1976D2;
         }
         #result {
             margin-top: 20px;
@@ -52,18 +92,187 @@
             color: #d32f2f;
             font-weight: bold;
         }
+        select {
+            padding: 8px;
+            font-size: 16px;
+            margin: 10px 0;
+            border-radius: 5px;
+            border: 2px solid #ddd;
+        }
+        .model-info {
+            margin: 10px 0;
+            font-size: 14px;
+            color: #666;
+        }
+        .section-title {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 1.2em;
+        }
     </style>
 </head>
 <body>
-    <h1>Persian to English Translator</h1>
-    <textarea id="text" placeholder="Enter Persian text here..." dir="rtl"></textarea>
-    <br>
-    <button onclick="translateText()">Translate</button>
-    <div id="result"></div>
+    <h1>Persian Text Editor and Translator</h1>
+    <div class="container">
+        <!-- Writing Section -->
+        <div class="text-section">
+            <div class="section-title">Write Persian Text</div>
+            <textarea id="draft" placeholder="Write your Persian text here..." dir="rtl"></textarea>
+            <button onclick="editText()" class="edit">Edit Text</button>
+        </div>
+
+        <!-- Editing Section -->
+        <div class="text-section">
+            <div class="section-title">Edit and Finalize</div>
+            <div id="editedText" class="edited-text" contenteditable="true" dir="rtl"></div>
+            <div id="explanation" class="explanation"></div>
+            <button onclick="finalizeEdit()" class="edit">Finalize Edit</button>
+        </div>
+
+        <!-- Translation Section -->
+        <div class="text-section">
+            <div class="section-title">Translate to English</div>
+            <div class="model-selection">
+                <select id="model" onchange="updateModelInfo()">
+                    <option value="gpt-3.5-turbo">GPT-3.5 Turbo (Fast & Good)</option>
+                    <option value="gpt-4">GPT-4 (Most Accurate)</option>
+                    <option value="claude-3">Claude-3 (Accurate)</option>
+                    <option value="gemini">Google Gemini (Latest AI)</option>
+                </select>
+                <div id="modelInfo" class="model-info"></div>
+            </div>
+            <div id="finalText" class="edited-text" dir="rtl"></div>
+            <button onclick="translateText()">Translate</button>
+            <div id="result"></div>
+        </div>
+    </div>
 
     <script>
+        // Add API keys to JavaScript
+        const OPENAI_API_KEY = '{{ OPENAI_API_KEY }}';
+        const ANTHROPIC_API_KEY = '{{ ANTHROPIC_API_KEY }}';
+        const GOOGLE_API_KEY = '{{ GOOGLE_API_KEY }}';
+
+        async function translate_with_openai(text, model) {
+            const response = await fetch('/translate', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    text: text,
+                    model: model
+                })
+            });
+            
+            if (!response.ok) {
+                const data = await response.json();
+                throw new Error(data.detail || 'Translation failed');
+            }
+            
+            const data = await response.json();
+            return data.translation;
+        }
+
+        async function translate_with_claude(text) {
+            const response = await fetch('/translate', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    text: text,
+                    model: 'claude-3'
+                })
+            });
+            
+            if (!response.ok) {
+                const data = await response.json();
+                throw new Error(data.detail || 'Translation failed');
+            }
+            
+            const data = await response.json();
+            return data.translation;
+        }
+
+        async function translate_with_gemini(text) {
+            const response = await fetch('/translate', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    text: text,
+                    model: 'gemini'
+                })
+            });
+            
+            if (!response.ok) {
+                const data = await response.json();
+                throw new Error(data.detail || 'Translation failed');
+            }
+            
+            const data = await response.json();
+            return data.translation;
+        }
+
+        function updateModelInfo() {
+            const model = document.getElementById('model').value;
+            const modelInfo = document.getElementById('modelInfo');
+            const modelDescriptions = {
+                'gpt-3.5-turbo': 'Fast and reliable translations with good accuracy',
+                'gpt-4': 'Most accurate translations, better understanding of context and nuances',
+                'claude-3': 'Accurate translations',
+                'gemini': 'Google's latest AI model for translation'
+            };
+            modelInfo.textContent = modelDescriptions[model];
+        }
+
+        async function editText() {
+            const draftText = document.getElementById('draft').value;
+            const editedText = document.getElementById('editedText');
+            const explanation = document.getElementById('explanation');
+            
+            if (!draftText.trim()) {
+                editedText.innerHTML = '<span class="error">Please enter some text to edit</span>';
+                return;
+            }
+            
+            editedText.innerHTML = '<span class="loading">AI is improving the text...</span>';
+            explanation.innerHTML = '';
+            
+            try {
+                const response = await fetch('/edit', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ text: draftText })
+                });
+                
+                const data = await response.json();
+                
+                if (!response.ok) {
+                    throw new Error(data.detail || 'Edit failed');
+                }
+                
+                const [improvedText, explanationText] = data.improved_text.split('|').map(s => s.trim());
+                editedText.textContent = improvedText;
+                explanation.textContent = explanationText;
+            } catch (error) {
+                editedText.innerHTML = `<span class="error">❌ Error: ${error.message}</span>`;
+                console.error('Edit error:', error);
+            }
+        }
+
+        function finalizeEdit() {
+            const editedText = document.getElementById('editedText').textContent;
+            document.getElementById('finalText').textContent = editedText;
+        }
+
         async function translateText() {
-            const text = document.getElementById('text').value;
+            const text = document.getElementById('finalText').textContent;
+            const model = document.getElementById('model').value;
             const result = document.getElementById('result');
             
             if (!text.trim()) {
@@ -74,32 +283,36 @@
             result.innerHTML = '<span class="loading">Translating...</span>';
             
             try {
-                const response = await fetch('/translate', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ text: text })
-                });
-                
-                const data = await response.json();
-                
-                if (!response.ok) {
-                    throw new Error(data.detail || 'Translation failed');
+                let translation;
+                if (model === 'gpt-3.5-turbo' || model === 'gpt-4') {
+                    translation = await translate_with_openai(text, model);
+                } else if (model === 'claude-3') {
+                    translation = await translate_with_claude(text);
+                } else if (model === 'gemini') {
+                    translation = await translate_with_gemini(text);
                 }
-                
-                result.innerHTML = data.translation;
+                result.innerHTML = translation;
             } catch (error) {
                 result.innerHTML = `<span class="error">❌ Error: ${error.message}</span>`;
                 console.error('Translation error:', error);
             }
         }
 
-        // Also allow translation when pressing Enter in the textarea
-        document.getElementById('text').addEventListener('keypress', function(e) {
-            if (e.key === 'Enter' && !e.shiftKey) {
+        // Initialize model info
+        updateModelInfo();
+
+        // Add keyboard shortcuts
+        document.getElementById('draft').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter' && e.ctrlKey) {
                 e.preventDefault();
-                translateText();
+                editText();
+            }
+        });
+
+        document.getElementById('editedText').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter' && e.ctrlKey) {
+                e.preventDefault();
+                finalizeEdit();
             }
         });
     </script>
