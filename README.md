@@ -1,51 +1,64 @@
-# Persian to English Translator
+# Persian Text Editor and Translator
 
-A web-based Persian to English translation service using OpenAI's GPT model.
+A web application for editing Persian text and translating it to English using various AI models.
 
 ## Features
 
-- Real-time translation from Persian to English
-- Clean and responsive web interface
-- Support for RTL text input
-- Error handling and loading states
+- Persian text editing with AI assistance
+- Translation to English using multiple models:
+  - GPT-3.5 Turbo
+  - GPT-4
+  - Claude-3
+  - Google Translate
 
 ## Setup
 
 1. Clone the repository:
 ```bash
-git clone <your-repo-url>
+git clone <your-repository-url>
 cd translation_project
 ```
 
-2. Install dependencies:
+2. Create a virtual environment and activate it:
+```bash
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
+
+3. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-3. Create a `.env` file and add your OpenAI API key:
-```
-OPENAI_API_KEY=your_api_key_here
-```
+4. Set up environment variables:
+   - Copy `.env.example` to `.env`
+   - Add your API keys to the `.env` file:
+     - OPENAI_API_KEY
+     - ANTHROPIC_API_KEY
+     - GOOGLE_API_KEY
 
-4. Run the application:
+5. Run the application:
 ```bash
 python translation_bot.py
 ```
 
-5. Open your browser and visit: `http://localhost:8088`
+6. Open your browser and navigate to `http://localhost:8088`
+
+## Usage
+
+1. Enter Persian text in the "Write Persian Text" section
+2. Click "Edit Text" to improve the text using AI
+3. Click "Finalize Edit" to move the text to the translation section
+4. Select a translation model
+5. Click "Translate" to get the English translation
 
 ## Requirements
 
 - Python 3.8+
 - FastAPI
 - OpenAI API key
-- Other dependencies listed in `requirements.txt`
-
-## Usage
-
-1. Enter Persian text in the text area
-2. Click "Translate" or press Enter
-3. The English translation will appear below
+- Anthropic API key (for Claude)
+- Google Cloud API key (for Translation API)
 
 ## License
 

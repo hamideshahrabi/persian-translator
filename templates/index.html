@@ -137,7 +137,7 @@
                     <option value="gpt-3.5-turbo">GPT-3.5 Turbo (Fast & Good)</option>
                     <option value="gpt-4">GPT-4 (Most Accurate)</option>
                     <option value="claude-3">Claude-3 (Accurate)</option>
-                    <option value="gemini">Google Gemini (Latest AI)</option>
+                    <option value="google-translate">Google Translate</option>
                 </select>
                 <div id="modelInfo" class="model-info"></div>
             </div>
@@ -203,7 +203,7 @@
                 },
                 body: JSON.stringify({
                     text: text,
-                    model: 'gemini'
+                    model: 'google-translate'
                 })
             });
             
@@ -223,7 +223,7 @@
                 'gpt-3.5-turbo': 'Fast and reliable translations with good accuracy',
                 'gpt-4': 'Most accurate translations, better understanding of context and nuances',
                 'claude-3': 'Accurate translations',
-                'gemini': 'Google's latest AI model for translation'
+                'google-translate': 'Accurate translations'
             };
             modelInfo.textContent = modelDescriptions[model];
         }
@@ -288,7 +288,7 @@
                     translation = await translate_with_openai(text, model);
                 } else if (model === 'claude-3') {
                     translation = await translate_with_claude(text);
-                } else if (model === 'gemini') {
+                } else if (model === 'google-translate') {
                     translation = await translate_with_gemini(text);
                 }
                 result.innerHTML = translation;
