@@ -1,6 +1,6 @@
 # Environment variables
 .env
-.env.*
+!.env.template
 
 # Google Cloud credentials
 **/clean-linker-448906-b1-aad79b28692e.json
@@ -31,6 +31,7 @@ wheels/
 
 # Virtual Environment
 venv/
+venv_translate/
 ENV/
 
 # IDE
