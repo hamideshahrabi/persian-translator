@@ -1,5 +1,6 @@
 # Environment variables
 .env
+!.env.template
 .env.*
 
 # Google Cloud credentials
