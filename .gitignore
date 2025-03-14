@@ -1,7 +1,8 @@
 # Environment variables
 .env
-!.env.template
-.env.*
+env_backup/
+venv/
+venv_translate/
 
 # Google Cloud credentials
 **/clean-linker-448906-b1-aad79b28692e.json
@@ -31,7 +32,6 @@ wheels/
 *.egg
 
 # Virtual Environment
-venv/
 ENV/
 
 # IDE
@@ -51,4 +51,10 @@ logs/
 # Local development
 *.sqlite
 *.db
-stats_data.json 
+stats_data.json
+
+# Google Cloud SDK
+google-cloud-sdk/
+
+# Local development
+samples/ 
