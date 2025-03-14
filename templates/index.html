@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html>
 <head>
@@ -212,6 +211,19 @@
         .word-count-success {
             color: #2e7d32;
         }
+        .highlight-punctuation {
+            background-color: yellow;
+        }
+        .highlight-added {
+            background-color: lightgreen;
+        }
+        .highlight-removed {
+            background-color: #ffdddd;
+            text-decoration: line-through;
+        }
+        .highlight-grammar {
+            background-color: lightblue;
+        }
     </style>
 </head>
 <body>
@@ -236,19 +248,26 @@
                 </select>
                 <div id="editModelInfo" class="model-info"></div>
             </div>
-            <textarea id="persianText" placeholder="Write your Persian text here..." dir="rtl"></textarea>
-            <div id="wordCountInfo" class="word-count-info">Current word count: 0</div>
-            <button id="editButton" class="edit">Edit Text</button>
+            <textarea id="persianText" dir="rtl" placeholder="Enter your Persian text here..."></textarea>
+            <button onclick="editText()">Edit Text</button>
+            <div id="editLoading" class="loading" style="display: none;">Processing</div>
+            <div id="editError" class="error" style="display: none;"></div>
             
-            <div class="results-container">
-                <div class="result-box">
-                    <div class="result-title">Edited Text:</div>
-                    <div id="editedText" class="edited-text" dir="rtl"></div>
-                    <div id="editedWordCountInfo" class="word-count-info"></div>
+            <!-- New diff view container -->
+            <div id="diffView" style="display: none; margin-top: 20px;">
+                <div style="display: flex; gap: 20px;">
+                    <div style="flex: 1;">
+                        <div class="result-title">Original Text</div>
+                        <div id="originalText" class="edited-text" dir="rtl" style="background-color: #f8f9fa;"></div>
+                    </div>
+                    <div style="flex: 1;">
+                        <div class="result-title">Edited Text</div>
+                        <div id="editedText" class="edited-text" dir="rtl" style="background-color: #f8f9fa;"></div>
+                    </div>
                 </div>
-                <div class="result-box">
-                    <div class="result-title">Explanation:</div>
-                    <div id="explanation" class="explanation"></div>
+                <div style="margin-top: 20px;">
+                    <div class="result-title">Combined View with Changes</div>
+                    <div id="diffHtml" class="edited-text" dir="rtl" style="background-color: #fff;"></div>
                 </div>
             </div>
         </div>
@@ -346,73 +365,55 @@
 
         // Handle text editing
         async function editText() {
-            const text = document.getElementById("persianText").value;
-            const editMode = document.getElementById("editMode").value;
-            const editModel = document.getElementById("editModel").value;
-            const editedText = document.getElementById("editedText");
-            const explanation = document.getElementById("explanation");
-            const editedWordCountInfo = document.getElementById("editedWordCountInfo");
+            const text = document.getElementById('persianText').value.trim();
+            const mode = document.getElementById('editMode').value;
+            const model = document.getElementById('editModel').value;
             
-            if (!text.trim()) {
-                editedText.innerHTML = '<span class="error">لطفا متن فارسی را وارد کنید</span>';
-                explanation.innerHTML = "";
-                editedWordCountInfo.innerHTML = "";
+            if (!text) {
+                showError('Please enter some text to edit');
                 return;
             }
             
-            editedText.innerHTML = '<span class="loading">در حال ویرایش متن...</span>';
-            explanation.innerHTML = "";
-            editedWordCountInfo.innerHTML = "";
+            document.getElementById('editLoading').style.display = 'flex';
+            document.getElementById('editError').style.display = 'none';
+            document.getElementById('diffView').style.display = 'none';
             
             try {
-                const response = await fetch("/edit", {
-                    method: "POST",
+                const response = await fetch('/edit', {
+                    method: 'POST',
                     headers: {
-                        "Content-Type": "application/json"
+                        'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({ 
+                    body: JSON.stringify({
                         text: text,
-                        mode: editMode,
-                        model: editModel
+                        mode: mode,
+                        model: model
                     })
                 });
                 
-                if (!response.ok) {
-                    const data = await response.json();
-                    throw new Error(data.detail || "Edit failed");
-                }
+                const result = await response.json();
                 
-                const data = await response.json();
-                editedText.textContent = data.edited_text;
-                explanation.textContent = data.explanation;
-                
-                // Update word count for edited text
-                const editedWordCount = countPersianWords(data.edited_text);
-                const targetMin = 2400;
-                const targetMax = 2600;
-                const difference = editedWordCount < targetMin ? targetMin - editedWordCount : 
-                                 editedWordCount > targetMax ? editedWordCount - targetMax : 0;
-                
-                let message = `Edited text word count: <strong>${editedWordCount}</strong><br>`;
-                if (editedWordCount >= targetMin && editedWordCount <= targetMax) {
-                    message += `<span class="word-count-success">✓ Perfect! Your edited text is within the target range (2400-2600 words)</span>`;
+                if (response.ok) {
+                    // Show the diff view
+                    document.getElementById('diffView').style.display = 'block';
+                    
+                    // Display original text
+                    document.getElementById('originalText').textContent = text;
+                    
+                    // Display edited text with highlights
+                    const editedTextDiv = document.getElementById('editedText');
+                    editedTextDiv.innerHTML = result.diff_html;
+                    
+                    // Display combined view with highlighted changes
+                    document.getElementById('diffHtml').innerHTML = result.diff_html;
+                    
                 } else {
-                    message += `<span class="word-count-warning">`;
-                    if (editedWordCount < targetMin) {
-                        message += `Add ${difference} more words to reach the minimum target of 2400 words`;
-                    } else {
-                        message += `Remove ${difference} words to reach the maximum target of 2600 words`;
-                    }
-                    message += `</span>`;
+                    showError(result.detail || 'Error editing text');
                 }
-                
-                editedWordCountInfo.innerHTML = message;
-                
             } catch (error) {
-                editedText.innerHTML = `<span class="error">خطا: ${error.message}</span>`;
-                explanation.innerHTML = "";
-                editedWordCountInfo.innerHTML = "";
-                console.error("Edit error:", error);
+                showError('Error connecting to the server');
+            } finally {
+                document.getElementById('editLoading').style.display = 'none';
             }
         }
 
@@ -452,6 +453,33 @@
                 result.innerHTML = `<span class="error">❌ Error: ${error.message}</span>`;
                 console.error("Translation error:", error);
             }
+        }
+
+        // Helper function to highlight changes
+        function highlightChanges(text, changes) {
+            let highlightedText = text;
+            
+            changes.forEach(change => {
+                const { type, old, new: newText } = change;
+                
+                if (type === "punctuation") {
+                    highlightedText = highlightedText.replace(new RegExp(`\b${old}\b`, 'g'), `<span class="highlight-punctuation">${newText}</span>`);
+                } else if (type === "added") {
+                    highlightedText = highlightedText.replace(new RegExp(`\b${newText}\b`, 'g'), `<span class="highlight-added">${newText}</span>`);
+                } else if (type === "removed") {
+                    highlightedText = highlightedText.replace(new RegExp(`\b${old}\b`, 'g'), `<span class="highlight-removed">${old}</span>`);
+                } else if (type === "grammar") {
+                    highlightedText = highlightedText.replace(new RegExp(`\b${old}\b`, 'g'), `<span class="highlight-grammar">${newText}</span>`);
+                }
+            });
+            
+            return highlightedText;
+        }
+
+        function showError(message) {
+            const errorElement = document.getElementById('editError');
+            errorElement.textContent = message;
+            errorElement.style.display = 'block';
         }
     </script>
 </body>
