@@ -687,6 +687,22 @@ with open("templates/index.html", "w") as f:
             line-height: 1.6;
             color: #1976D2;
         }
+        .word-count-info {
+            background-color: #e8f5e9;
+            border: 1px solid #c8e6c9;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 10px 0;
+            font-size: 16px;
+            line-height: 1.6;
+            color: #2e7d32;
+        }
+        .word-count-warning {
+            color: #f57c00;
+        }
+        .word-count-success {
+            color: #2e7d32;
+        }
     </style>
 </head>
 <body>
@@ -712,12 +728,14 @@ with open("templates/index.html", "w") as f:
                 <div id="editModelInfo" class="model-info"></div>
             </div>
             <textarea id="persianText" placeholder="Write your Persian text here..." dir="rtl"></textarea>
+            <div id="wordCountInfo" class="word-count-info">Current word count: 0</div>
             <button id="editButton" class="edit">Edit Text</button>
             
             <div class="results-container">
                 <div class="result-box">
                     <div class="result-title">Edited Text:</div>
                     <div id="editedText" class="edited-text" dir="rtl"></div>
+                    <div id="editedWordCountInfo" class="word-count-info"></div>
                 </div>
                 <div class="result-box">
                     <div class="result-title">Explanation:</div>
@@ -749,12 +767,15 @@ with open("templates/index.html", "w") as f:
         window.addEventListener("DOMContentLoaded", () => {
             // Initialize model info
             updateModelInfo();
+            updateWordCount(); // Initialize word count display
 
             // Add event listeners
             document.getElementById("editButton").addEventListener("click", editText);
             document.getElementById("translateButton").addEventListener("click", translateText);
             document.getElementById("model").addEventListener("change", updateModelInfo);
             document.getElementById("editModel").addEventListener("change", updateModelInfo);
+            document.getElementById("persianText").addEventListener("input", updateWordCount);
+            document.getElementById("persianText").addEventListener("keyup", updateWordCount);
             document.getElementById("persianText").addEventListener("keypress", (e) => {
                 if (e.key === "Enter" && e.ctrlKey) {
                     e.preventDefault();
@@ -762,6 +783,38 @@ with open("templates/index.html", "w") as f:
                 }
             });
         });
+
+        function countPersianWords(text) {
+            if (!text.trim()) return 0;
+            // Split by any whitespace and filter out empty strings
+            return text.trim().split(/\s+/).filter(word => word.length > 0).length;
+        }
+
+        function updateWordCount() {
+            const text = document.getElementById("persianText").value;
+            const wordCount = countPersianWords(text);
+            const wordCountInfo = document.getElementById("wordCountInfo");
+            
+            const targetMin = 2400;
+            const targetMax = 2600;
+            const difference = wordCount < targetMin ? targetMin - wordCount : 
+                             wordCount > targetMax ? wordCount - targetMax : 0;
+            
+            let message = `Current word count: <strong>${wordCount}</strong><br>`;
+            if (wordCount >= targetMin && wordCount <= targetMax) {
+                message += `<span class="word-count-success">✓ Perfect! Your text is within the target range (2400-2600 words)</span>`;
+            } else {
+                message += `<span class="word-count-warning">`;
+                if (wordCount < targetMin) {
+                    message += `Add ${difference} more words to reach the minimum target of 2400 words`;
+                } else {
+                    message += `Remove ${difference} words to reach the maximum target of 2600 words`;
+                }
+                message += `</span>`;
+            }
+            
+            wordCountInfo.innerHTML = message;
+        }
 
         // Update model information display
         function updateModelInfo() {
@@ -789,15 +842,18 @@ with open("templates/index.html", "w") as f:
             const editModel = document.getElementById("editModel").value;
             const editedText = document.getElementById("editedText");
             const explanation = document.getElementById("explanation");
+            const editedWordCountInfo = document.getElementById("editedWordCountInfo");
             
             if (!text.trim()) {
                 editedText.innerHTML = '<span class="error">لطفا متن فارسی را وارد کنید</span>';
                 explanation.innerHTML = "";
+                editedWordCountInfo.innerHTML = "";
                 return;
             }
             
             editedText.innerHTML = '<span class="loading">در حال ویرایش متن...</span>';
             explanation.innerHTML = "";
+            editedWordCountInfo.innerHTML = "";
             
             try {
                 const response = await fetch("/edit", {
@@ -820,9 +876,33 @@ with open("templates/index.html", "w") as f:
                 const data = await response.json();
                 editedText.textContent = data.edited_text;
                 explanation.textContent = data.explanation;
+                
+                // Update word count for edited text
+                const editedWordCount = countPersianWords(data.edited_text);
+                const targetMin = 2400;
+                const targetMax = 2600;
+                const difference = editedWordCount < targetMin ? targetMin - editedWordCount : 
+                                 editedWordCount > targetMax ? editedWordCount - targetMax : 0;
+                
+                let message = `Edited text word count: <strong>${editedWordCount}</strong><br>`;
+                if (editedWordCount >= targetMin && editedWordCount <= targetMax) {
+                    message += `<span class="word-count-success">✓ Perfect! Your edited text is within the target range (2400-2600 words)</span>`;
+                } else {
+                    message += `<span class="word-count-warning">`;
+                    if (editedWordCount < targetMin) {
+                        message += `Add ${difference} more words to reach the minimum target of 2400 words`;
+                    } else {
+                        message += `Remove ${difference} words to reach the maximum target of 2600 words`;
+                    }
+                    message += `</span>`;
+                }
+                
+                editedWordCountInfo.innerHTML = message;
+                
             } catch (error) {
                 editedText.innerHTML = `<span class="error">خطا: ${error.message}</span>`;
                 explanation.innerHTML = "";
+                editedWordCountInfo.innerHTML = "";
                 console.error("Edit error:", error);
             }
         }
