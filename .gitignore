@@ -41,4 +41,13 @@ ENV/
 
 # OS
 .DS_Store
-Thumbs.db 
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Local development
+*.sqlite
+*.db
+stats_data.json 

@@ -9,6 +9,8 @@ import logging
 import json
 from enum import Enum
 import google.generativeai as genai
+from datetime import datetime, timedelta
+from collections import defaultdict
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -31,12 +33,458 @@ app = FastAPI()
 class ModelType(str, Enum):
     GPT35 = "gpt-3.5-turbo"
     GPT4 = "gpt-4"
-    CLAUDE = "claude-3"
+    CLAUDE = "claude-3-opus-20240229"
+    GEMINI = "gemini-1.5-pro"
     GOOGLE = "google-translate"
-    GEMINI = "gemini"  # Adding Gemini as new option
 
 # Setup templates
 templates = Jinja2Templates(directory="templates")
+
+# Statistics tracking
+class Stats:
+    def __init__(self):
+        self.stats_file = "stats_data.json"  # This is our memory file
+        self.load_stats()  # Load existing stats when server starts
+
+    def load_stats(self):
+        try:
+            if os.path.exists(self.stats_file):
+                with open(self.stats_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    self.total_translations = data.get('total_translations', 0)
+                    self.total_edits = data.get('total_edits', 0)
+                    self.active_users = set(data.get('active_users', []))
+                    self.model_usage = defaultdict(int, data.get('model_usage', {}))
+                    self.recent_activities = data.get('recent_activities', [])
+                    self.successful_requests = data.get('successful_requests', 0)
+                    self.total_requests = data.get('total_requests', 0)
+                    self.model_success_rates = defaultdict(lambda: {"success": 0, "total": 0}, 
+                                                        data.get('model_success_rates', {}))
+                    self.model_response_times = defaultdict(list, 
+                                                         {k: v for k, v in data.get('model_response_times', {}).items()})
+                    self.model_quality_scores = defaultdict(list, 
+                                                         {k: v for k, v in data.get('model_quality_scores', {}).items()})
+                    self.model_error_types = defaultdict(lambda: defaultdict(int), 
+                                                       data.get('model_error_types', {}))
+                    self.mode_metrics = data.get('mode_metrics', {
+                        "fast_mode": {
+                            "success_rate": 0,
+                            "total_requests": 0,
+                            "successful_requests": 0,
+                            "response_times": [],
+                            "quality_scores": []
+                        },
+                        "detailed_mode": {
+                            "success_rate": 0,
+                            "total_requests": 0,
+                            "successful_requests": 0,
+                            "response_times": [],
+                            "quality_scores": []
+                        }
+                    })
+                    # Add time-based tracking with proper defaultdict initialization
+                    self.daily_stats = {
+                        date: {
+                            **stats,
+                            'model_usage': defaultdict(int, stats.get('model_usage', {})),
+                            'quality_scores': defaultdict(list, stats.get('quality_scores', {}))
+                        }
+                        for date, stats in data.get('daily_stats', {}).items()
+                    }
+                    self.weekly_stats = {
+                        week: {
+                            **stats,
+                            'model_usage': defaultdict(int, stats.get('model_usage', {})),
+                            'quality_scores': defaultdict(list, stats.get('quality_scores', {}))
+                        }
+                        for week, stats in data.get('weekly_stats', {}).items()
+                    }
+            else:
+                # Initialize with default values if no file exists
+                self.total_translations = 0
+                self.total_edits = 0
+                self.active_users = set()
+                self.model_usage = defaultdict(int)
+                self.recent_activities = []
+                self.successful_requests = 0
+                self.total_requests = 0
+                self.model_success_rates = defaultdict(lambda: {"success": 0, "total": 0})
+                self.model_response_times = defaultdict(list)
+                self.model_quality_scores = defaultdict(list)
+                self.model_error_types = defaultdict(lambda: defaultdict(int))
+                self.mode_metrics = {
+                    "fast_mode": {
+                        "success_rate": 0,
+                        "total_requests": 0,
+                        "successful_requests": 0,
+                        "response_times": [],
+                        "quality_scores": []
+                    },
+                    "detailed_mode": {
+                        "success_rate": 0,
+                        "total_requests": 0,
+                        "successful_requests": 0,
+                        "response_times": [],
+                        "quality_scores": []
+                    }
+                }
+                # Initialize time-based tracking with proper defaultdict initialization
+                self.daily_stats = {}
+                self.weekly_stats = {}
+        except Exception as e:
+            logger.error(f"Error loading stats: {str(e)}")
+            # Initialize with default values if loading fails
+            self.total_translations = 0
+            self.total_edits = 0
+            self.active_users = set()
+            self.model_usage = defaultdict(int)
+            self.recent_activities = []
+            self.successful_requests = 0
+            self.total_requests = 0
+            self.model_success_rates = defaultdict(lambda: {"success": 0, "total": 0})
+            self.model_response_times = defaultdict(list)
+            self.model_quality_scores = defaultdict(list)
+            self.model_error_types = defaultdict(lambda: defaultdict(int))
+            self.mode_metrics = {
+                "fast_mode": {
+                    "success_rate": 0,
+                    "total_requests": 0,
+                    "successful_requests": 0,
+                    "response_times": [],
+                    "quality_scores": []
+                },
+                "detailed_mode": {
+                    "success_rate": 0,
+                    "total_requests": 0,
+                    "successful_requests": 0,
+                    "response_times": [],
+                    "quality_scores": []
+                }
+            }
+            # Initialize time-based tracking with proper defaultdict initialization
+            self.daily_stats = {}
+            self.weekly_stats = {}
+
+    def save_stats(self):
+        # Save all stats to JSON file
+        data = {
+            'total_translations': self.total_translations,
+            'total_edits': self.total_edits,
+            'active_users': list(self.active_users),
+            'model_usage': dict(self.model_usage),
+            'recent_activities': self.recent_activities,
+            'successful_requests': self.successful_requests,
+            'total_requests': self.total_requests,
+            'model_success_rates': dict(self.model_success_rates),
+            'model_response_times': dict(self.model_response_times),
+            'model_quality_scores': dict(self.model_quality_scores),
+            'model_error_types': dict(self.model_error_types),
+            'mode_metrics': self.mode_metrics,
+            'daily_stats': {
+                date: {
+                    **stats,
+                    'model_usage': dict(stats['model_usage']),
+                    'quality_scores': dict(stats['quality_scores'])
+                }
+                for date, stats in self.daily_stats.items()
+            },
+            'weekly_stats': {
+                week: {
+                    **stats,
+                    'model_usage': dict(stats['model_usage']),
+                    'quality_scores': dict(stats['quality_scores'])
+                }
+                for week, stats in self.weekly_stats.items()
+            }
+        }
+        with open(self.stats_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    def update_time_based_stats(self, activity_type: str, model: str, success: bool, quality_score: int = None):
+        current_date = datetime.now()
+        date_str = current_date.strftime("%Y-%m-%d")
+        week_str = current_date.strftime("%Y-W%W")  # Format: YYYY-WNN (week number)
+
+        # Convert model to string if it's a ModelType enum
+        model_str = model.value if hasattr(model, 'value') else str(model)
+
+        # Update daily stats
+        if date_str not in self.daily_stats:
+            self.daily_stats[date_str] = {
+                "translations": 0,
+                "edits": 0,
+                "successful_requests": 0,
+                "total_requests": 0,
+                "model_usage": defaultdict(int),
+                "quality_scores": defaultdict(list)
+            }
+        
+        daily = self.daily_stats[date_str]
+        if activity_type == "Translation":
+            daily["translations"] += 1
+        else:
+            daily["edits"] += 1
+        daily["model_usage"][model_str] += 1
+        daily["total_requests"] += 1
+        if success:
+            daily["successful_requests"] += 1
+        if quality_score:
+            daily["quality_scores"][model_str].append(quality_score)
+
+        # Update weekly stats
+        if week_str not in self.weekly_stats:
+            self.weekly_stats[week_str] = {
+                "translations": 0,
+                "edits": 0,
+                "successful_requests": 0,
+                "total_requests": 0,
+                "model_usage": defaultdict(int),
+                "quality_scores": defaultdict(list)
+            }
+        
+        weekly = self.weekly_stats[week_str]
+        if activity_type == "Translation":
+            weekly["translations"] += 1
+        else:
+            weekly["edits"] += 1
+        weekly["model_usage"][model_str] += 1
+        weekly["total_requests"] += 1
+        if success:
+            weekly["successful_requests"] += 1
+        if quality_score:
+            weekly["quality_scores"][model_str].append(quality_score)
+
+        # Clean up old stats (keep last 30 days and 12 weeks)
+        self._cleanup_old_stats()
+
+    def _cleanup_old_stats(self):
+        current_date = datetime.now()
+        # Remove daily stats older than 30 days
+        self.daily_stats = {k: v for k, v in self.daily_stats.items() 
+                          if (current_date - datetime.strptime(k, "%Y-%m-%d")).days <= 30}
+        # Remove weekly stats older than 12 weeks
+        self.weekly_stats = {k: v for k, v in self.weekly_stats.items() 
+                           if (current_date - datetime.strptime(k, "%Y-W%W")).days <= 84}
+
+    def get_time_based_metrics(self):
+        try:
+            current_date = datetime.now()
+            date_str = current_date.strftime("%Y-%m-%d")
+            week_str = current_date.strftime("%Y-W%W")
+
+            # Get today's stats with default values
+            today_stats = self.daily_stats.get(date_str, {
+                "translations": 0,
+                "edits": 0,
+                "successful_requests": 0,
+                "total_requests": 0,
+                "model_usage": defaultdict(int),
+                "quality_scores": defaultdict(list)
+            })
+
+            # Get this week's stats with default values
+            week_stats = self.weekly_stats.get(week_str, {
+                "translations": 0,
+                "edits": 0,
+                "successful_requests": 0,
+                "total_requests": 0,
+                "model_usage": defaultdict(int),
+                "quality_scores": defaultdict(list)
+            })
+
+            # Calculate averages with error handling
+            def calculate_metrics(stats):
+                try:
+                    total_requests = stats["total_requests"]
+                    successful_requests = stats["successful_requests"]
+                    success_rate = (successful_requests / total_requests * 100) if total_requests > 0 else 0
+                    
+                    # Calculate average quality scores per model
+                    avg_quality_scores = {}
+                    for model, scores in stats["quality_scores"].items():
+                        if scores:
+                            avg_quality_scores[model] = sum(scores) / len(scores)
+                        else:
+                            avg_quality_scores[model] = 0
+
+                    return {
+                        "translations": stats["translations"],
+                        "edits": stats["edits"],
+                        "success_rate": round(success_rate, 1),
+                        "model_usage": dict(stats["model_usage"]),
+                        "avg_quality_scores": avg_quality_scores
+                    }
+                except Exception as e:
+                    logger.error(f"Error calculating metrics: {str(e)}")
+                    return {
+                        "translations": 0,
+                        "edits": 0,
+                        "success_rate": 0,
+                        "model_usage": {},
+                        "avg_quality_scores": {}
+                    }
+
+            return {
+                "today": calculate_metrics(today_stats),
+                "this_week": calculate_metrics(week_stats),
+                "total": {
+                    "translations": self.total_translations,
+                    "edits": self.total_edits,
+                    "success_rate": round(self.get_api_success_rate(), 1),
+                    "model_usage": dict(self.model_usage),
+                    "avg_quality_scores": {
+                        model: sum(scores) / len(scores) if scores else 0
+                        for model, scores in self.model_quality_scores.items()
+                    }
+                }
+            }
+        except Exception as e:
+            logger.error(f"Error getting time-based metrics: {str(e)}")
+            return {
+                "today": {
+                    "translations": 0,
+                    "edits": 0,
+                    "success_rate": 0,
+                    "model_usage": {},
+                    "avg_quality_scores": {}
+                },
+                "this_week": {
+                    "translations": 0,
+                    "edits": 0,
+                    "success_rate": 0,
+                    "model_usage": {},
+                    "avg_quality_scores": {}
+                },
+                "total": {
+                    "translations": 0,
+                    "edits": 0,
+                    "success_rate": 0,
+                    "model_usage": {},
+                    "avg_quality_scores": {}
+                }
+            }
+
+    def add_translation(self, model: str, success: bool = True, response_time: float = 0, error_type: str = None, quality_score: int = None):
+        self.total_translations += 1
+        
+        # Convert model to string if it's a ModelType enum
+        model_str = model.value if hasattr(model, 'value') else str(model)
+        
+        self.model_usage[model_str] += 1
+        self.model_success_rates[model_str]["total"] += 1
+        if success:
+            self.model_success_rates[model_str]["success"] += 1
+        if response_time > 0:
+            self.model_response_times[model_str].append(response_time)
+        if error_type:
+            if model_str not in self.model_error_types:
+                self.model_error_types[model_str] = defaultdict(int)
+            self.model_error_types[model_str][error_type] += 1
+        if quality_score:
+            self.model_quality_scores[model_str].append(quality_score)
+            
+        self.add_activity("Translation", f"Translation using {model_str}")
+        self.update_time_based_stats("Translation", model_str, success, quality_score)
+        self.save_stats()
+
+    def add_edit(self, model: str, mode: str, success: bool = True, response_time: float = 0, error_type: str = None, quality_score: int = None):
+        self.total_edits += 1
+        
+        # Convert model to string if it's a ModelType enum
+        model_str = model.value if hasattr(model, 'value') else str(model)
+        
+        self.model_usage[model_str] += 1
+        self.model_success_rates[model_str]["total"] += 1
+        
+        # Update model-specific metrics
+        if success:
+            self.model_success_rates[model_str]["success"] += 1
+        if response_time > 0:
+            self.model_response_times[model_str].append(response_time)
+        if error_type:
+            if model_str not in self.model_error_types:
+                self.model_error_types[model_str] = defaultdict(int)
+            self.model_error_types[model_str][error_type] += 1
+        if quality_score:
+            self.model_quality_scores[model_str].append(quality_score)
+            
+        # Update mode-specific metrics
+        mode_key = "fast_mode" if mode == "fast" else "detailed_mode"
+        self.mode_metrics[mode_key]["total_requests"] += 1
+        if success:
+            self.mode_metrics[mode_key]["successful_requests"] += 1
+        if response_time > 0:
+            self.mode_metrics[mode_key]["response_times"].append(response_time)
+        if quality_score:
+            self.mode_metrics[mode_key]["quality_scores"].append(quality_score)
+            
+        self.add_activity("Edit", f"Text edit using {model_str} in {mode} mode")
+        self.update_time_based_stats("Edit", model_str, success, quality_score)
+        self.save_stats()
+
+    def add_user(self, user_id: str):
+        self.active_users.add(user_id)
+        self.save_stats()  # Save after updating
+
+    def add_activity(self, activity_type: str, description: str):
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.recent_activities.insert(0, {
+            "type": activity_type,
+            "description": description,
+            "timestamp": timestamp
+        })
+        # Keep only last 10 activities
+        self.recent_activities = self.recent_activities[:10]
+        self.save_stats()  # Save after updating
+
+    def record_request(self, success: bool):
+        self.total_requests += 1
+        if success:
+            self.successful_requests += 1
+        self.save_stats()  # Save after updating
+
+    def get_api_success_rate(self) -> float:
+        if self.total_requests == 0:
+            return 100.0
+        return (self.successful_requests / self.total_requests) * 100
+
+    def add_quality_score(self, model: str, score: int):
+        if 1 <= score <= 5:
+            self.model_quality_scores[model].append(score)
+
+    def get_model_metrics(self):
+        metrics = {}
+        
+        # Add mode-specific metrics
+        for mode, data in self.mode_metrics.items():
+            success_rate = (data["successful_requests"] / data["total_requests"] * 100) if data["total_requests"] > 0 else 0
+            avg_response_time = sum(data["response_times"]) / len(data["response_times"]) if data["response_times"] else 0
+            avg_quality = sum(data["quality_scores"]) / len(data["quality_scores"]) if data["quality_scores"] else 0
+            
+            metrics[mode] = {
+                "success_rate": round(success_rate, 1),
+                "avg_response_time": round(avg_response_time, 2),
+                "avg_quality": round(avg_quality, 1)
+            }
+        
+        # Add model-specific metrics
+        for model in self.model_usage.keys():
+            success_rate = (self.model_success_rates[model]["success"] / 
+                          self.model_success_rates[model]["total"] * 100) if self.model_success_rates[model]["total"] > 0 else 0
+            avg_response_time = sum(self.model_response_times[model]) / len(self.model_response_times[model]) if self.model_response_times[model] else 0
+            avg_quality = sum(self.model_quality_scores[model]) / len(self.model_quality_scores[model]) if self.model_quality_scores[model] else 0
+            
+            metrics[model] = {
+                "success_rate": round(success_rate, 1),
+                "avg_response_time": round(avg_response_time, 2),
+                "avg_quality": round(avg_quality, 1),
+                "total_requests": self.model_success_rates[model]["total"],
+                "error_types": dict(self.model_error_types[model])
+            }
+        
+        return metrics
+
+stats = Stats()
 
 # Create templates directory and HTML file
 os.makedirs("templates", exist_ok=True)
@@ -256,10 +704,10 @@ with open("templates/index.html", "w") as f:
             </div>
             <div class="model-selection">
                 <select id="editModel">
+                    <option value="gemini-1.5-pro" selected>Gemini Pro (Advanced AI)</option>
                     <option value="gpt-3.5-turbo">GPT-3.5 Turbo (Fast & Good)</option>
                     <option value="gpt-4">GPT-4 (Most Accurate)</option>
-                    <option value="claude-3">Claude-3 (Accurate)</option>
-                    <option value="gemini">Gemini Pro (Advanced AI)</option>
+                    <option value="claude-3-opus-20240229">Claude-3 (Accurate)</option>
                 </select>
                 <div id="editModelInfo" class="model-info"></div>
             </div>
@@ -283,11 +731,11 @@ with open("templates/index.html", "w") as f:
             <div class="section-title">Translate to English</div>
             <div class="model-selection">
                 <select id="model">
+                    <option value="gemini-1.5-pro" selected>Gemini Pro (Advanced AI)</option>
                     <option value="gpt-3.5-turbo">GPT-3.5 Turbo (Fast & Good)</option>
                     <option value="gpt-4">GPT-4 (Most Accurate)</option>
-                    <option value="claude-3">Claude-3 (Accurate)</option>
+                    <option value="claude-3-opus-20240229">Claude-3 (Accurate)</option>
                     <option value="google-translate">Google Cloud Translation (Basic)</option>
-                    <option value="gemini">Gemini Pro (Advanced AI)</option>
                 </select>
                 <div id="modelInfo" class="model-info"></div>
             </div>
@@ -325,9 +773,9 @@ with open("templates/index.html", "w") as f:
             const modelDescriptions = {
                 "gpt-3.5-turbo": "Fast and reliable processing with good accuracy",
                 "gpt-4": "Most accurate processing, better understanding of context and nuances",
-                "claude-3": "Advanced AI model with strong understanding of Persian language",
+                "claude-3-opus-20240229": "Advanced AI model with strong understanding of Persian language",
                 "google-translate": "Basic machine translation, good for simple texts",
-                "gemini": "Google's advanced AI model, excellent for context and cultural nuances"
+                "gemini-1.5-pro": "Google's advanced AI model, excellent for context and cultural nuances"
             };
             
             modelInfo.textContent = modelDescriptions[model];
@@ -424,11 +872,11 @@ with open("templates/index.html", "w") as f:
 class EditRequest(BaseModel):
     text: str
     mode: str  # "fast" or "detailed"
-    model: ModelType = ModelType.GPT35  # Default to GPT-3.5-turbo if not specified
+    model: str  # Changed from ModelType to str to accept the raw model name
 
 class TranslationRequest(BaseModel):
     text: str
-    model: ModelType
+    model: str  # Changed from ModelType to str to accept the raw model name
 
 def get_system_prompt(mode: str, language: str) -> str:
     return f"""You are an expert bilingual editor specializing in {language} professional development, coaching, and psychological content.
@@ -656,7 +1104,7 @@ async def translate_with_gemini(text: str) -> str:
             raise Exception("Gemini API key is missing")
             
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-1.5-pro')  # Updated model name
         
         generation_config = {
             "temperature": 0.1  # Low temperature for accurate translation
@@ -696,60 +1144,194 @@ Provide only the direct translation, maintaining exact meaning."""
 async def root(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
+@app.get("/dashboard")
+async def dashboard(request: Request):
+    try:
+        # Initialize default metrics structure
+        default_metrics = {
+            "today": {
+                "translations": 0,
+                "edits": 0,
+                "success_rate": 0,
+                "model_usage": {},
+                "avg_quality_scores": {}
+            },
+            "this_week": {
+                "translations": 0,
+                "edits": 0,
+                "success_rate": 0,
+                "model_usage": {},
+                "avg_quality_scores": {}
+            },
+            "total": {
+                "translations": 0,
+                "edits": 0,
+                "success_rate": 0,
+                "model_usage": {},
+                "avg_quality_scores": {}
+            }
+        }
+
+        # Get metrics with error handling
+        try:
+            model_metrics = stats.get_time_based_metrics()
+            if not isinstance(model_metrics, dict):
+                model_metrics = default_metrics
+        except Exception as e:
+            logger.error(f"Error getting time-based metrics: {str(e)}")
+            model_metrics = default_metrics
+
+        # Ensure all required data is present with default values
+        dashboard_data = {
+            "request": request,
+            "total_translations": getattr(stats, 'total_translations', 0),
+            "total_edits": getattr(stats, 'total_edits', 0),
+            "active_users": len(getattr(stats, 'active_users', set())),
+            "api_success_rate": round(getattr(stats, 'get_api_success_rate', lambda: 0.0)(), 1),
+            "model_usage": dict(getattr(stats, 'model_usage', defaultdict(int))),
+            "recent_activities": getattr(stats, 'recent_activities', []),
+            "model_metrics": model_metrics
+        }
+        
+        logger.info("Rendering dashboard with data")
+        return templates.TemplateResponse("dashboard.html", dashboard_data)
+    except Exception as e:
+        logger.error(f"Error rendering dashboard: {str(e)}")
+        # Return a simple error page instead of raising an exception
+        return templates.TemplateResponse("dashboard.html", {
+            "request": request,
+            "error": "An error occurred while loading the dashboard. Please try again later."
+        })
+
+def calculate_translation_quality_score(original_text: str, translated_text: str) -> int:
+    score = 3  # Start with a neutral score
+    
+    # Check if the translation maintains the original meaning
+    if len(translated_text.split()) > len(original_text.split()) * 0.8:
+        score += 1
+        
+    # Check if professional terms are preserved
+    professional_terms = ['coaching', 'leadership', 'development', 'skills', 'professional']
+    term_count = sum(1 for term in professional_terms if term.lower() in translated_text.lower())
+    if term_count >= 2:
+        score += 1
+        
+    # Check if cultural context is preserved
+    cultural_indicators = ['culture', 'language', 'social', 'professional']
+    if any(indicator.lower() in translated_text.lower() for indicator in cultural_indicators):
+        score += 1
+    
+    # Cap the score between 1 and 5
+    return max(1, min(5, score))
+
 @app.post("/translate")
 async def translate(request: TranslationRequest):
+    start_time = datetime.now()
     try:
         logger.info(f"Attempting to translate text using {request.model}: {request.text}")
         
-        if request.model == ModelType.GPT35:
+        # Convert model string to ModelType
+        try:
+            model_type = ModelType(request.model)
+        except ValueError:
+            return {"error": f"Invalid model: {request.model}", "status_code": 400}
+        
+        if model_type == ModelType.GPT35:
             translated_text = await translate_with_openai(request.text, "gpt-3.5-turbo")
-        elif request.model == ModelType.GPT4:
+        elif model_type == ModelType.GPT4:
             translated_text = await translate_with_openai(request.text, "gpt-4")
-        elif request.model == ModelType.CLAUDE:
+        elif model_type == ModelType.CLAUDE:
             translated_text = await translate_with_claude(request.text)
-        elif request.model == ModelType.GOOGLE:
+        elif model_type == ModelType.GOOGLE:
             translated_text = await translate_with_google_cloud(request.text)
-        elif request.model == ModelType.GEMINI:
+        elif model_type == ModelType.GEMINI:
             translated_text = await translate_with_gemini(request.text)
         else:
             raise HTTPException(status_code=400, detail="Invalid model specified")
             
+        response_time = (datetime.now() - start_time).total_seconds()
         logger.info(f"Translation successful with {request.model}")
+        
+        # Calculate quality score for translation
+        quality_score = calculate_translation_quality_score(request.text, translated_text)
+        
+        stats.add_translation(request.model, True, response_time, quality_score=quality_score)
+        stats.record_request(True)
         return {"translated_text": translated_text}
         
     except Exception as e:
+        response_time = (datetime.now() - start_time).total_seconds()
+        error_type = type(e).__name__
         logger.error(f"Translation error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        stats.add_translation(request.model, False, response_time, error_type)
+        stats.record_request(False)
+        if isinstance(e, HTTPException):
+            return {"error": e.detail, "status_code": e.status_code}
+        return {"error": str(e), "status_code": 500}
+
+def calculate_quality_score(original_text: str, edited_text: str, mode: str) -> int:
+    score = 3  # Start with a neutral score
+    
+    # For Fast Mode
+    if mode == "fast":
+        # Check if the model didn't change too much (preserved your text)
+        if len(edited_text.split()) > len(original_text.split()) * 0.95:
+            score += 1
+        # Check if proper punctuation was added
+        if any(c in edited_text for c in ['.', '،', '؛', '؟']):
+            score += 1
+        # Check if the text has enough content
+        if len(edited_text.split()) > 5:
+            score += 1
+            
+    # For Detailed Mode
+    else:
+        # Check if professional terms were used correctly
+        professional_terms = ['کوچینگ', 'رهبری', 'توسعه', 'مهارت', 'حرفه‌ای']
+        term_count = sum(1 for term in professional_terms if term in edited_text)
+        if term_count >= 2:
+            score += 1
+            
+        # Check if the model maintained your content
+        if len(edited_text.split()) > len(original_text.split()) * 0.9:
+            score += 1
+            
+        # Check if cultural context was preserved
+        cultural_indicators = ['فرهنگ', 'زبان', 'اجتماعی', 'حرفه‌ای']
+        if any(indicator in edited_text for indicator in cultural_indicators):
+            score += 1
+    
+    # Cap the score between 1 and 5
+    return max(1, min(5, score))
 
 @app.post("/edit")
 async def edit(request: EditRequest):
+    start_time = datetime.now()
     try:
         logger.info(f"Attempting to edit text in {request.mode} mode using {request.model}: {request.text}")
+        
+        # Convert model string to ModelType
+        try:
+            model_type = ModelType(request.model)
+        except ValueError:
+            logger.error(f"Invalid model type received: {request.model}")
+            return {"error": f"Invalid model: {request.model}", "status_code": 400}
         
         # Detect language
         language = "Persian" if any("\u0600" <= c <= "\u06FF" for c in request.text) else "English"
         
         system_prompt = get_system_prompt(request.mode, language)
         user_prompt_edit = get_edit_prompt(request.text, request.mode, language)
-        user_prompt_explain = get_explanation_prompt(request.text, request.mode, language)
         
-        if request.model in [ModelType.GPT35, ModelType.GPT4]:
+        edited_text = ""
+        explanation = ""
+        
+        if model_type == ModelType.GPT35:
             if not OPENAI_API_KEY:
                 raise HTTPException(status_code=500, detail="OpenAI API key is missing")
                 
-            # Set temperature based on model and mode
-            if request.model == ModelType.GPT4:
-                # GPT-4 temperatures
-                if request.mode == "detailed":
-                    temperature = 0.4  # Higher for detailed editing to allow creative improvements
-                else:
-                    temperature = 0.2  # Lower for fast mode focusing on accuracy
-            else:
-                # GPT-3.5 temperatures
-                if request.mode == "detailed":
-                    temperature = 0.5  # Higher for detailed editing
-                else:
-                    temperature = 0.3  # Lower for fast mode
+            # Set temperature based on mode
+            temperature = 0.5 if request.mode == "detailed" else 0.3
 
             headers = {
                 "Authorization": f"Bearer {OPENAI_API_KEY}",
@@ -758,7 +1340,7 @@ async def edit(request: EditRequest):
             
             # First get the edited text
             data = {
-                "model": request.model,
+                "model": "gpt-3.5-turbo",
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt_edit}
@@ -776,7 +1358,8 @@ async def edit(request: EditRequest):
             edited_text = result["choices"][0]["message"]["content"].strip()
             
             # Then get the explanation
-            data["messages"][1]["content"] = user_prompt_explain + edited_text
+            user_prompt_explain = get_explanation_prompt(request.text, edited_text, language)
+            data["messages"][1]["content"] = user_prompt_explain
             response = requests.post(
                 "https://api.openai.com/v1/chat/completions",
                 headers=headers,
@@ -786,7 +1369,50 @@ async def edit(request: EditRequest):
             result = response.json()
             explanation = result["choices"][0]["message"]["content"].strip()
             
-        elif request.model == ModelType.CLAUDE:
+        elif model_type == ModelType.GPT4:
+            if not OPENAI_API_KEY:
+                raise HTTPException(status_code=500, detail="OpenAI API key is missing")
+                
+            # Set temperature based on mode
+            temperature = 0.4 if request.mode == "detailed" else 0.2
+
+            headers = {
+                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            
+            # First get the edited text
+            data = {
+                "model": "gpt-4",
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt_edit}
+                ],
+                "temperature": temperature
+            }
+            
+            response = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers=headers,
+                json=data
+            )
+            response.raise_for_status()
+            result = response.json()
+            edited_text = result["choices"][0]["message"]["content"].strip()
+            
+            # Then get the explanation
+            user_prompt_explain = get_explanation_prompt(request.text, edited_text, language)
+            data["messages"][1]["content"] = user_prompt_explain
+            response = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers=headers,
+                json=data
+            )
+            response.raise_for_status()
+            result = response.json()
+            explanation = result["choices"][0]["message"]["content"].strip()
+            
+        elif model_type == ModelType.CLAUDE:
             if not ANTHROPIC_API_KEY:
                 raise HTTPException(status_code=500, detail="Anthropic API key is missing")
                 
@@ -800,7 +1426,7 @@ async def edit(request: EditRequest):
             data = {
                 "model": "claude-3-opus-20240229",
                 "max_tokens": 1024,
-                "temperature": 0.4 if request.mode == "detailed" else 0.2,  # Adjust based on mode
+                "temperature": 0.4 if request.mode == "detailed" else 0.2,
                 "messages": [
                     {
                         "role": "system",
@@ -823,7 +1449,8 @@ async def edit(request: EditRequest):
             edited_text = result["content"][0]["text"].strip()
             
             # Then get the explanation
-            data["messages"][1]["content"] = user_prompt_explain + edited_text
+            user_prompt_explain = get_explanation_prompt(request.text, edited_text, language)
+            data["messages"][1]["content"] = user_prompt_explain
             response = requests.post(
                 "https://api.anthropic.com/v1/messages",
                 headers=headers,
@@ -833,72 +1460,67 @@ async def edit(request: EditRequest):
             result = response.json()
             explanation = result["content"][0]["text"].strip()
             
-        elif request.model == ModelType.GEMINI:
+        elif model_type == ModelType.GEMINI:
             if not GEMINI_API_KEY:
                 raise HTTPException(status_code=500, detail="Gemini API key is missing")
                 
             genai.configure(api_key=GEMINI_API_KEY)
-            model = genai.GenerativeModel('gemini-1.5-flash')
+            model = genai.GenerativeModel('gemini-1.5-pro')  # Updated model name
             
             generation_config = {
-                "temperature": 0.25 if request.mode == "detailed" else 0.2  # Very slight increase for detailed mode to allow minor refinements
+                "temperature": 0.25 if request.mode == "detailed" else 0.2
             }
             
             # First get the edited text
             prompt = f"{system_prompt}\n\n{user_prompt_edit}"
-            response = model.generate_content(prompt)
+            response = model.generate_content(
+                prompt,
+                generation_config=generation_config
+            )
             
             if not hasattr(response, 'text'):
                 raise Exception("No response from Gemini")
             edited_text = response.text.strip()
             
             # Then get the explanation
-            prompt = f"{system_prompt}\n\n{user_prompt_explain}{edited_text}"
-            response = model.generate_content(prompt)
+            user_prompt_explain = get_explanation_prompt(request.text, edited_text, language)
+            prompt = f"{system_prompt}\n\n{user_prompt_explain}"
+            response = model.generate_content(
+                prompt,
+                generation_config=generation_config
+            )
             
             if not hasattr(response, 'text'):
                 raise Exception("No explanation from Gemini")
             explanation = response.text.strip()
             
-        elif request.model == ModelType.GOOGLE:
-            if not GOOGLE_API_KEY:
-                raise HTTPException(status_code=500, detail="Google API key is missing")
-                
-            url = "https://translation.googleapis.com/language/translate/v2"
-            # First translate to English
-            params = {
-                'q': request.text,
-                'target': 'en',
-                'source': 'fa',
-                'key': GOOGLE_API_KEY
-            }
-            response = requests.post(url, params=params)
-            response.raise_for_status()
-            english = response.json()['data']['translations'][0]['translatedText']
-            
-            # Then back to Persian
-            params['q'] = english
-            params['target'] = 'fa'
-            params['source'] = 'en'
-            response = requests.post(url, params=params)
-            response.raise_for_status()
-            edited_text = response.json()['data']['translations'][0]['translatedText']
-            
-            # Generate a simple explanation
-            explanation = "Text was processed through translation to English and back to Persian for basic improvements."
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported model: {request.model}")
         
-        logger.info(f"Edit successful with {request.model}: {edited_text}")
-        logger.info(f"Explanation: {explanation}")
+        response_time = (datetime.now() - start_time).total_seconds()
+        logger.info(f"Edit successful with {request.model}")
+        
+        # Calculate quality score
+        quality_score = calculate_quality_score(request.text, edited_text, request.mode)
+        
+        stats.add_edit(request.model, request.mode, True, response_time, quality_score=quality_score)
+        stats.record_request(True)
         return {"edited_text": edited_text, "explanation": explanation}
             
     except Exception as e:
+        response_time = (datetime.now() - start_time).total_seconds()
+        error_type = type(e).__name__
         logger.error(f"Edit error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        stats.add_edit(request.model, request.mode, False, response_time, error_type)
+        stats.record_request(False)
+        if isinstance(e, HTTPException):
+            return {"error": e.detail, "status_code": e.status_code}
+        return {"error": str(e), "status_code": 500}
 
 async def test_gemini_connection() -> bool:
     try:
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-1.5-pro')
         response = model.generate_content("Hello")
         return hasattr(response, 'text')
     except Exception as e:

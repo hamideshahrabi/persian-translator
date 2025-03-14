@@ -1,65 +1,97 @@
 # Persian Text Editor and Translator
 
-A web application for editing Persian text and translating it to English using various AI models.
+A web application for editing and translating Persian text using various AI models.
 
 ## Features
 
-- Persian text editing with AI assistance
-- Translation to English using multiple models:
+- Persian text editing with grammar and style improvements
+- Translation to English using multiple AI models
+- Quality scoring for translations and edits
+- Dashboard with usage statistics
+- Support for multiple AI models:
+  - Gemini Pro
   - GPT-3.5 Turbo
   - GPT-4
   - Claude-3
-  - Google Translate
+  - Google Cloud Translation
 
 ## Setup
 
-1. Clone the repository:
-```bash
-git clone <your-repository-url>
-cd translation_project
-```
-
-2. Create a virtual environment and activate it:
-```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
-
+1. Clone the repository
+2. Create a virtual environment:
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   ```
 3. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
-
-4. Set up environment variables:
-   - Copy `.env.example` to `.env`
-   - Add your API keys to the `.env` file:
-     - OPENAI_API_KEY
-     - ANTHROPIC_API_KEY
-     - GOOGLE_API_KEY
-
+   ```bash
+   pip install -r requirements.txt
+   ```
+4. Create a `.env` file with your API keys:
+   ```
+   OPENAI_API_KEY=your_openai_key
+   ANTHROPIC_API_KEY=your_anthropic_key
+   GOOGLE_API_KEY=your_google_key
+   GEMINI_API_KEY=your_gemini_key
+   ```
 5. Run the application:
-```bash
-python translation_bot.py
-```
+   ```bash
+   uvicorn translation_bot:app --host 0.0.0.0 --port 8080
+   ```
 
-6. Open your browser and navigate to `http://localhost:8088`
+## Deployment Options
 
-## Usage
+### Option 1: Deploy on Render (Recommended for small groups)
 
-1. Enter Persian text in the "Write Persian Text" section
-2. Click "Edit Text" to improve the text using AI
-3. Click "Finalize Edit" to move the text to the translation section
-4. Select a translation model
-5. Click "Translate" to get the English translation
+1. Create an account on [Render](https://render.com)
+2. Create a new Web Service
+3. Connect your GitHub repository
+4. Set the following:
+   - Build Command: `pip install -r requirements.txt`
+   - Start Command: `uvicorn translation_bot:app --host 0.0.0.0 --port $PORT`
+5. Add your environment variables in Render's dashboard
+6. Deploy!
 
-## Requirements
+### Option 2: Deploy on Heroku
 
-- Python 3.8+
-- FastAPI
-- OpenAI API key
-- Anthropic API key (for Claude)
-- Google Cloud API key (for Translation API)
+1. Create an account on [Heroku](https://heroku.com)
+2. Install Heroku CLI
+3. Create a `Procfile`:
+   ```
+   web: uvicorn translation_bot:app --host 0.0.0.0 --port $PORT
+   ```
+4. Deploy using Heroku CLI:
+   ```bash
+   heroku create your-app-name
+   git push heroku main
+   ```
+5. Set environment variables:
+   ```bash
+   heroku config:set OPENAI_API_KEY=your_key
+   heroku config:set ANTHROPIC_API_KEY=your_key
+   heroku config:set GOOGLE_API_KEY=your_key
+   heroku config:set GEMINI_API_KEY=your_key
+   ```
 
-## License
+### Option 3: Deploy on DigitalOcean App Platform
 
-MIT License 
+1. Create an account on [DigitalOcean](https://digitalocean.com)
+2. Create a new App
+3. Connect your GitHub repository
+4. Configure the app:
+   - Environment: Python
+   - Build Command: `pip install -r requirements.txt`
+   - Run Command: `uvicorn translation_bot:app --host 0.0.0.0 --port $PORT`
+5. Add your environment variables
+6. Deploy!
+
+## Security Considerations
+
+1. Never commit your `.env` file or expose API keys
+2. Consider implementing user authentication for your group
+3. Monitor API usage to stay within limits
+4. Use HTTPS for secure communication
+
+## Support
+
+For issues or questions, please open an issue in the repository. 
