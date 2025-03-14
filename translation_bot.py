@@ -217,28 +217,41 @@ def get_word_count_status(count: int) -> str:
         return f"Within target range (2600 ± 100 words)"
 
 async def split_text_for_gpt(text: str) -> List[str]:
-    """Split text into chunks that fit within GPT's context window."""
+    """Split text into chunks that fit within GPT's context window while preserving sentence boundaries."""
     # Rough estimate: 1 Persian word = 2 tokens on average
-    max_words_per_chunk = 3000  # Safe limit for 8192 token context window
-    words = text.split()
+    max_words_per_chunk = 1000  # Smaller chunks for more reliable processing
     
-    if len(words) <= max_words_per_chunk:
-        return [text]
-        
+    # Split by sentences first (using Persian and Latin punctuation)
+    sentences = re.split(r'([.!?।؟!\n]+)', text)
+    
     chunks = []
     current_chunk = []
     current_count = 0
     
-    for word in words:
-        if current_count >= max_words_per_chunk:
-            chunks.append(' '.join(current_chunk))
+    for i in range(0, len(sentences), 2):
+        sentence = sentences[i]
+        punctuation = sentences[i + 1] if i + 1 < len(sentences) else ""
+        
+        # Count words in current sentence
+        sentence_words = len(sentence.split())
+        
+        if current_count + sentence_words > max_words_per_chunk and current_chunk:
+            # Join current chunk and add to chunks
+            chunks.append(''.join(current_chunk))
             current_chunk = []
             current_count = 0
-        current_chunk.append(word)
-        current_count += 1
+        
+        # Add sentence and its punctuation
+        current_chunk.extend([sentence, punctuation])
+        current_count += sentence_words
     
+    # Add any remaining text
     if current_chunk:
-        chunks.append(' '.join(current_chunk))
+        chunks.append(''.join(current_chunk))
+    
+    # If no chunks were created (text shorter than max_words), return the whole text
+    if not chunks:
+        return [text]
     
     return chunks
 
@@ -251,20 +264,70 @@ async def edit(request: EditRequest):
     while current_retry < max_retries:
         try:
             if request.model == ModelType.GEMINI.value:
-                # Simplified prompt for faster processing
-                prompt = f"Edit this Persian text for {'quick' if request.mode == 'fast' else 'detailed'} corrections: {request.text}"
+                # Split long texts into smaller chunks
+                text_chunks = await split_text_for_gpt(request.text)
+                edited_chunks = []
                 
-                # Increased timeout to 30 seconds
-                response = await asyncio.wait_for(
-                    asyncio.to_thread(gemini_model.generate_content, prompt),
-                    timeout=30.0
-                )
+                for chunk in text_chunks:
+                    # Enhanced prompt emphasizing text preservation with explicit length instruction
+                    prompt = f"""Edit this Persian text while preserving ALL content. The text MUST maintain approximately the same length.
+Rules:
+1. Do not remove or drop any parts of the text
+2. Keep all original content and meaning
+3. Only fix grammar, spelling, and style issues
+4. Maintain the exact same topics and ideas
+5. If something seems redundant, still keep it
+
+Make only necessary corrections for {'grammar and spelling' if request.mode == 'fast' else 'grammar, style, clarity and professional tone'}.
+Text: {chunk}"""
+                    
+                    # Increased timeout to 60 seconds for thorough processing
+                    response = await asyncio.wait_for(
+                        asyncio.to_thread(gemini_model.generate_content, prompt),
+                        timeout=60.0
+                    )
+                    
+                    if not hasattr(response, 'text'):
+                        raise HTTPException(status_code=500, detail="Invalid response from Gemini API")
+                    
+                    edited_chunks.append(response.text.strip())
                 
-                if not hasattr(response, 'text'):
-                    raise HTTPException(status_code=500, detail="Invalid response from Gemini API")
+                edited_text = ' '.join(edited_chunks)
                 
-                edited_text = response.text.strip()
-                explanation = "Edit completed" if request.mode == "fast" else "Detailed edit completed"
+                # Verify no significant content loss
+                original_words = count_persian_words(request.text)
+                edited_words = count_persian_words(edited_text)
+                if edited_words < original_words * 0.95:  # More strict - allow only 5% reduction
+                    logger.warning(f"Significant content loss detected: Original {original_words} words, Edited {edited_words} words")
+                    # Retry with even stricter prompt
+                    prompt = f"""CRITICAL: Edit this Persian text with ZERO content loss. You MUST:
+1. Keep EXACTLY the same content and meaning
+2. Maintain the same length (current length: {original_words} words)
+3. Make only minimal grammar fixes
+4. Do not remove ANY content
+5. Do not summarize or shorten
+6. Keep all examples, quotes, and details
+
+Text: {request.text}"""
+                    response = await asyncio.wait_for(
+                        asyncio.to_thread(gemini_model.generate_content, prompt),
+                        timeout=60.0
+                    )
+                    edited_text = response.text.strip()
+                    
+                    # If still losing content, revert to original
+                    if count_persian_words(edited_text) < original_words * 0.95:
+                        logger.warning("Still losing content after retry, reverting to original")
+                        return EditResponse(
+                            edited_text=request.text,
+                            explanation="Could not edit while preserving content - returned original text",
+                            changes=[],
+                            diff_html=generate_html_diff(request.text, request.text),
+                            word_count=original_words,
+                            word_count_status=get_word_count_status(original_words)
+                        )
+                
+                explanation = "Light editing completed" if request.mode == "fast" else "Detailed editing completed while preserving all content"
                 
             elif request.model in [ModelType.GPT35.value, ModelType.GPT4.value]:
                 # Configure OpenAI client
@@ -275,25 +338,29 @@ async def edit(request: EditRequest):
                 edited_chunks = []
                 
                 for chunk in text_chunks:
-                    # Create system message based on mode
-                    system_msg = "You are a Persian text editor. Edit the text for grammar and clarity." if request.mode == "fast" else \
-                               "You are a Persian text editor. Perform a detailed edit focusing on grammar, style, and clarity."
+                    # Enhanced system message emphasizing content preservation
+                    system_msg = """You are a Persian text editor. Your task is to edit the text while preserving ALL content.
+Never remove or drop any parts of the text. Make only necessary corrections for grammar and clarity.
+If the text seems repetitive or redundant, still preserve it as the author intended."""
+                    
+                    user_msg = f"""Edit this Persian text while preserving ALL content. Make only necessary corrections for {'grammar and spelling' if request.mode == 'fast' else 'grammar, style, and clarity'}.
+Important: Return the COMPLETE text with your edits. Text: {chunk}"""
                     
                     # Make API call to OpenAI with increased max_tokens
                     response = await client.chat.completions.create(
                         model=request.model,
                         messages=[
                             {"role": "system", "content": system_msg},
-                            {"role": "user", "content": f"Edit this Persian text: {chunk}"}
+                            {"role": "user", "content": user_msg}
                         ],
-                        temperature=0.7,
-                        max_tokens=4000  # Increased max tokens
+                        temperature=0.3,  # Reduced for more conservative editing
+                        max_tokens=4000
                     )
                     
                     edited_chunks.append(response.choices[0].message.content.strip())
                 
                 edited_text = ' '.join(edited_chunks)
-                explanation = "GPT edit completed" if request.mode == "fast" else "Detailed GPT edit completed"
+                explanation = "Light editing completed" if request.mode == "fast" else "Detailed editing completed while preserving all content"
                 
             else:
                 raise HTTPException(status_code=400, detail=f"Unsupported model: {request.model}")
