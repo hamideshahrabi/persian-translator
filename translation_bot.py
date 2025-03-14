@@ -962,26 +962,29 @@ Text to edit:
 Return only the edited text without explanations."""
 
 def get_explanation_prompt(original_text: str, edited_text: str, language: str) -> str:
-    return f"""Provide a brief, bullet-point summary of key changes made to this {language} text:
+    return f"""لطفا فقط تغییرات انجام شده بین متن اصلی و متن ویرایش شده را به صورت خلاصه و نقطه‌ای توضیح دهید:
 
-• Grammar & Style:
-  - List 1-2 major grammar/style improvements
-
-• Terminology:
-  - Note any professional term improvements
-
-• Tone & Impact:
-  - Mention key tone/impact enhancements
-
-Keep the explanation short and focused on the most important changes.
-
-Original Text:
+متن اصلی:
 {original_text}
 
-Edited Text:
+متن ویرایش شده:
 {edited_text}
 
-Provide a concise bullet-point summary."""
+تغییرات را در سه دسته زیر دسته‌بندی کنید (فقط در صورت وجود تغییر):
+
+• تغییرات نگارشی:
+  - اصلاحات املایی و نقطه‌گذاری
+  - تغییرات در فاصله‌گذاری
+
+• تغییرات ساختاری:
+  - تغییرات در سطح رسمی بودن متن
+  - اصلاحات دستوری
+
+• تغییرات محتوایی:
+  - بهبود در اصطلاحات تخصصی
+  - تغییرات در لحن و تاثیرگذاری
+
+اگر متن‌ها یکسان هستند یا تغییری وجود ندارد، فقط بنویسید: «تغییری در متن ایجاد نشده است.»"""
 
 async def translate_with_openai(text: str, model: str) -> str:
     try:
