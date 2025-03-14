@@ -200,15 +200,20 @@
             border: 1px solid #c8e6c9;
             border-radius: 8px;
             padding: 15px;
-            margin: 10px 0;
-            font-size: 16px;
+            margin: 15px 0;
+            font-size: 14px;
             line-height: 1.6;
             color: #2e7d32;
+            text-align: left;
         }
         .word-count-warning {
+            background-color: #fff3e0;
+            border-color: #ffe0b2;
             color: #f57c00;
         }
         .word-count-success {
+            background-color: #e8f5e9;
+            border-color: #c8e6c9;
             color: #2e7d32;
         }
         .highlight-punctuation {
@@ -250,6 +255,7 @@
             </div>
             <textarea id="persianText" dir="rtl" placeholder="Enter your Persian text here..."></textarea>
             <button onclick="editText()">Edit Text</button>
+            <div id="wordCountInfo" class="word-count-info"></div>
             <div id="editLoading" class="loading" style="display: none;">Processing</div>
             <div id="editError" class="error" style="display: none;"></div>
             
@@ -290,6 +296,21 @@
         </div>
     </div>
 
+    <div class="results-container">
+        <div class="result-box">
+            <div class="result-title">Edited Text</div>
+            <div id="editedText" class="edited-text" dir="rtl"></div>
+        </div>
+        <div class="result-box">
+            <div class="result-title">Changes Explanation</div>
+            <div id="explanation" class="explanation"></div>
+        </div>
+        <div class="result-box">
+            <div class="result-title">Highlighted Changes</div>
+            <div id="diffView" class="edited-text" dir="rtl"></div>
+        </div>
+    </div>
+
     <script>
         // Wait for DOM to load
         window.addEventListener("DOMContentLoaded", () => {
@@ -323,20 +344,20 @@
             const wordCount = countPersianWords(text);
             const wordCountInfo = document.getElementById("wordCountInfo");
             
-            const targetMin = 2400;
-            const targetMax = 2600;
+            const targetMin = 2500;
+            const targetMax = 2700;
             const difference = wordCount < targetMin ? targetMin - wordCount : 
                              wordCount > targetMax ? wordCount - targetMax : 0;
             
             let message = `Current word count: <strong>${wordCount}</strong><br>`;
             if (wordCount >= targetMin && wordCount <= targetMax) {
-                message += `<span class="word-count-success">✓ Perfect! Your text is within the target range (2400-2600 words)</span>`;
+                message += `<span class="word-count-success">✓ Perfect! Your text is within the target range (2500-2700 words)</span>`;
             } else {
                 message += `<span class="word-count-warning">`;
                 if (wordCount < targetMin) {
-                    message += `Add ${difference} more words to reach the minimum target of 2400 words`;
+                    message += `Add ${difference} more words to reach the minimum target of 2500 words`;
                 } else {
-                    message += `Remove ${difference} words to reach the maximum target of 2600 words`;
+                    message += `Remove ${difference} words to reach the maximum target of 2700 words`;
                 }
                 message += `</span>`;
             }
@@ -406,6 +427,20 @@
                     
                     // Display combined view with highlighted changes
                     document.getElementById('diffHtml').innerHTML = result.diff_html;
+                    
+                    // Display word count information
+                    const wordCountInfo = document.getElementById('wordCountInfo');
+                    wordCountInfo.textContent = `Word Count: ${result.word_count} - ${result.word_count_status}`;
+                    
+                    // Add appropriate color class based on status
+                    wordCountInfo.className = 'word-count-info';
+                    if (result.word_count_status.includes('Need')) {
+                        wordCountInfo.classList.add('word-count-warning');
+                    } else if (result.word_count_status.includes('Exceeds')) {
+                        wordCountInfo.classList.add('word-count-warning');
+                    } else {
+                        wordCountInfo.classList.add('word-count-success');
+                    }
                     
                 } else {
                     showError(result.detail || 'Error editing text');

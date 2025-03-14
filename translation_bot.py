@@ -62,7 +62,9 @@ class EditResponse(BaseModel):
     edited_text: str
     explanation: str
     changes: List[Change]
-    diff_html: str  # New field for HTML diff
+    diff_html: str
+    word_count: int
+    word_count_status: str  # Will contain message about difference from target range
 
 class TranslationResponse(BaseModel):
     translated_text: str
@@ -193,47 +195,138 @@ def generate_html_diff(original: str, edited: str) -> str:
     
     return ''.join(html_diff)
 
+def count_persian_words(text: str) -> int:
+    """Count words in Persian text, handling both Persian and English text."""
+    # Remove extra whitespace and split
+    words = text.strip().split()
+    return len(words)
+
+def get_word_count_status(count: int) -> str:
+    """Generate status message about word count relative to target range."""
+    target = 2600
+    lower_bound = target - 100
+    upper_bound = target + 100
+    
+    if count < lower_bound:
+        diff = lower_bound - count
+        return f"Need {diff} more words to reach minimum target of {lower_bound}"
+    elif count > upper_bound:
+        diff = count - upper_bound
+        return f"Exceeds maximum target by {diff} words (max: {upper_bound})"
+    else:
+        return f"Within target range (2600 ± 100 words)"
+
+async def split_text_for_gpt(text: str) -> List[str]:
+    """Split text into chunks that fit within GPT's context window."""
+    # Rough estimate: 1 Persian word = 2 tokens on average
+    max_words_per_chunk = 3000  # Safe limit for 8192 token context window
+    words = text.split()
+    
+    if len(words) <= max_words_per_chunk:
+        return [text]
+        
+    chunks = []
+    current_chunk = []
+    current_count = 0
+    
+    for word in words:
+        if current_count >= max_words_per_chunk:
+            chunks.append(' '.join(current_chunk))
+            current_chunk = []
+            current_count = 0
+        current_chunk.append(word)
+        current_count += 1
+    
+    if current_chunk:
+        chunks.append(' '.join(current_chunk))
+    
+    return chunks
+
 @app.post("/edit")
 async def edit(request: EditRequest):
     """Edit text using the specified model."""
-    try:
-        if request.model == ModelType.GEMINI.value:
-            # Simplified prompt for faster processing
-            prompt = f"Edit this Persian text for {'quick' if request.mode == 'fast' else 'detailed'} corrections: {request.text}"
+    max_retries = 3
+    current_retry = 0
+    
+    while current_retry < max_retries:
+        try:
+            if request.model == ModelType.GEMINI.value:
+                # Simplified prompt for faster processing
+                prompt = f"Edit this Persian text for {'quick' if request.mode == 'fast' else 'detailed'} corrections: {request.text}"
+                
+                # Increased timeout to 30 seconds
+                response = await asyncio.wait_for(
+                    asyncio.to_thread(gemini_model.generate_content, prompt),
+                    timeout=30.0
+                )
+                
+                if not hasattr(response, 'text'):
+                    raise HTTPException(status_code=500, detail="Invalid response from Gemini API")
+                
+                edited_text = response.text.strip()
+                explanation = "Edit completed" if request.mode == "fast" else "Detailed edit completed"
+                
+            elif request.model in [ModelType.GPT35.value, ModelType.GPT4.value]:
+                # Configure OpenAI client
+                client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
+                
+                # Split text into manageable chunks if necessary
+                text_chunks = await split_text_for_gpt(request.text)
+                edited_chunks = []
+                
+                for chunk in text_chunks:
+                    # Create system message based on mode
+                    system_msg = "You are a Persian text editor. Edit the text for grammar and clarity." if request.mode == "fast" else \
+                               "You are a Persian text editor. Perform a detailed edit focusing on grammar, style, and clarity."
+                    
+                    # Make API call to OpenAI with increased max_tokens
+                    response = await client.chat.completions.create(
+                        model=request.model,
+                        messages=[
+                            {"role": "system", "content": system_msg},
+                            {"role": "user", "content": f"Edit this Persian text: {chunk}"}
+                        ],
+                        temperature=0.7,
+                        max_tokens=4000  # Increased max tokens
+                    )
+                    
+                    edited_chunks.append(response.choices[0].message.content.strip())
+                
+                edited_text = ' '.join(edited_chunks)
+                explanation = "GPT edit completed" if request.mode == "fast" else "Detailed GPT edit completed"
+                
+            else:
+                raise HTTPException(status_code=400, detail=f"Unsupported model: {request.model}")
             
-            # Use a timeout to prevent hanging
-            response = await asyncio.wait_for(
-                asyncio.to_thread(gemini_model.generate_content, prompt),
-                timeout=10.0
-            )
-            
-            if not hasattr(response, 'text'):
-                raise HTTPException(status_code=500, detail="Invalid response from Gemini API")
-            
-            edited_text = response.text.strip()
-            explanation = "Edit completed" if request.mode == "fast" else "Detailed edit completed"
-            
-            # Generate changes and HTML diff
+            # Generate changes and HTML diff (common for all models)
             changes = detect_changes(request.text, edited_text) if request.text != edited_text else []
             diff_html = generate_html_diff(request.text, edited_text)
+            
+            # Calculate word count information
+            word_count = count_persian_words(edited_text)
+            word_count_status = get_word_count_status(word_count)
             
             return EditResponse(
                 edited_text=edited_text,
                 explanation=explanation,
                 changes=changes,
-                diff_html=diff_html
+                diff_html=diff_html,
+                word_count=word_count,
+                word_count_status=word_count_status
             )
-        else:
-            raise HTTPException(status_code=400, detail=f"Unsupported model: {request.model}")
-            
-    except asyncio.TimeoutError:
-        logger.error("Gemini API request timed out")
-        raise HTTPException(status_code=504, detail="Request timed out")
-    except Exception as e:
-        logger.error(f"Edit error: {str(e)}")
-        if isinstance(e, HTTPException):
-            raise e
-        raise HTTPException(status_code=500, detail=str(e))
+                
+        except asyncio.TimeoutError:
+            current_retry += 1
+            if current_retry >= max_retries:
+                logger.error("API request timed out after all retries")
+                raise HTTPException(status_code=504, detail="Request timed out after multiple attempts")
+            logger.warning(f"API timeout, attempt {current_retry} of {max_retries}")
+            await asyncio.sleep(1)  # Wait 1 second before retrying
+        except Exception as e:
+            logger.error(f"Edit error: {str(e)}")
+            if isinstance(e, HTTPException):
+                raise e
+            raise HTTPException(status_code=500, detail=str(e))
 
 async def update_stats(model: str, mode: str, success: bool, response_time: float, 
                       quality_score: Optional[int] = None, error_type: Optional[str] = None):
