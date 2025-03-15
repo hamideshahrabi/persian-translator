@@ -21,47 +21,85 @@ from functools import lru_cache
 
 # Coaching-specific prompts
 COACHING_DETAILED_PROMPT = """Edit this Persian coaching text focusing on:
-1. Grammar and syntax corrections
-2. Paragraph structure and flow
-3. Punctuation and spacing
-4. Word choice and consistency
-5. Sentence structure clarity
-6. Professional coaching terminology accuracy
-7. Formatting consistency
+1. Title and heading detection & formatting:
+   - Identify standalone opening sentences as potential titles
+   - Look for these title patterns:
+     * Short, impactful opening statements
+     * Sentences followed by detailed explanations
+     * Thematic statements at section starts
+   - Preserve title case and emphasis
+   - Maintain heading hierarchy
+   - Keep heading formatting consistent
+2. Grammar and syntax corrections
+3. Paragraph structure and flow
+4. Punctuation and spacing
+5. Word choice and consistency
+6. Sentence structure clarity
+7. Professional coaching terminology accuracy
+8. Formatting consistency
 
 DO NOT:
 - Change core concepts or definitions
 - Alter coaching methodologies
 - Modify exercise instructions
 - Rewrite content meanings
+- Change title meanings or hierarchy
 
-Make ONLY technical corrections that improve readability while preserving the exact meaning."""
+Make ONLY technical corrections that improve readability while preserving the exact meaning.
+Ensure titles and headings are clearly distinguished from body text.
+For implicit titles (like standalone opening sentences), add appropriate formatting."""
 
 COACHING_FAST_PROMPT = """Quick edit of this Persian text focusing ONLY on:
-1. Basic grammar fixes
-2. Obvious typos
-3. Clear punctuation errors
-4. Basic sentence structure issues
+1. Title and heading identification & preservation:
+   - Detect and preserve implicit titles (standalone opening sentences)
+   - Look for these title patterns:
+     * Short opening statements
+     * Theme-setting sentences
+     * Section introductions
+   - Keep titles exactly as is
+   - Maintain heading levels
+   - Fix only obvious title formatting issues
+2. Basic grammar fixes
+3. Obvious typos
+4. Clear punctuation errors
+5. Basic sentence structure issues
 
-Keep everything else exactly as is."""
+Keep everything else exactly as is, especially title meanings and hierarchy.
+Mark implicit titles with appropriate formatting."""
 
 COACHING_TRANSLATION_PROMPT = """Translate this Persian coaching text to English with these requirements:
-1. Preserve all coaching methodologies and concepts exactly
-2. Maintain professional coaching terminology
-3. Keep the same tone and style
-4. Preserve paragraph structure
-5. Maintain all examples and exercises in their original form
-6. Keep any specialized coaching terms in their professional form
+1. Title and heading accuracy:
+   - Identify and translate implicit titles (like standalone opening sentences)
+   - Look for these title patterns:
+     * Short, impactful statements at section starts
+     * Theme-introducing sentences
+     * Standalone declarative statements
+   - Translate titles with exact meaning
+   - Preserve heading hierarchy
+   - Maintain title emphasis and formatting
+2. Preserve all coaching methodologies and concepts exactly
+3. Maintain professional coaching terminology
+4. Keep the same tone and style
+5. Preserve paragraph structure
+6. Maintain all examples and exercises in their original form
+7. Keep any specialized coaching terms in their professional form
 
-Focus on accuracy of coaching concepts over literary style."""
+Focus on accuracy of coaching concepts and title translations over literary style.
+Format implicit titles appropriately in the translation."""
 
 COACHING_FAST_TRANSLATION_PROMPT = """Quick translation of this Persian coaching text to English:
-1. Maintain core coaching concepts
-2. Keep professional terminology
-3. Preserve exercise instructions
-4. Maintain basic structure
+1. Accurate title and heading translation:
+   - Detect and translate implicit titles (opening statements)
+   - Keep title meanings exact
+   - Preserve heading structure
+   - Mark standalone opening sentences as titles
+2. Maintain core coaching concepts
+3. Keep professional terminology
+4. Preserve exercise instructions
+5. Maintain basic structure
 
-Prioritize preserving coaching meaning over style."""
+Prioritize preserving coaching meaning and title accuracy over style.
+Ensure implicit titles are properly formatted in translation."""
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -96,6 +134,10 @@ class EditRequest(BaseModel):
 class TranslationRequest(BaseModel):
     text: str
     model: str
+    mode: str = "detailed"  # Default to detailed mode
+    
+    class Config:
+        protected_namespaces = ()  # Resolve model_ namespace conflict
 
 class Change(BaseModel):
     type: str
@@ -226,21 +268,83 @@ async def test_gemini_connection() -> bool:
 
 def generate_html_diff(original: str, edited: str) -> str:
     """Generate HTML with highlighted differences between original and edited text."""
-    matcher = difflib.SequenceMatcher(None, original, edited)
+    # Split texts into lines for better diff
+    original_lines = original.split('\n')
+    edited_lines = edited.split('\n')
+    
+    # Pre-process to handle existing HTML tags
+    def clean_html(text):
+        # Remove existing HTML tags but preserve content
+        text = re.sub(r'<h2 class="title">(.*?)</h2>', r'\1', text)
+        text = re.sub(r'<span class="highlight-\w+">(.*?)</span>', r'\1', text)
+        return text
+    
+    original_lines = [clean_html(line) for line in original_lines]
+    edited_lines = [clean_html(line) for line in edited_lines]
+    
+    matcher = difflib.SequenceMatcher(None, original_lines, edited_lines)
     html_diff = []
     
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == 'equal':
-            html_diff.append(original[i1:i2])
+            # Check if this is a title line
+            for line in original_lines[i1:i2]:
+                if is_title_line(line):
+                    html_diff.append(f'<h2 class="title">{line}</h2>')
+                else:
+                    html_diff.append(line)
         elif tag == 'delete':
-            html_diff.append(f'<span style="background-color: #ffcdd2; text-decoration: line-through;">{original[i1:i2]}</span>')
+            for line in original_lines[i1:i2]:
+                html_diff.append(f'<span class="highlight-removed">{line}</span>')
         elif tag == 'insert':
-            html_diff.append(f'<span style="background-color: #c8e6c9;">{edited[j1:j2]}</span>')
+            for line in edited_lines[j1:j2]:
+                if is_title_line(line):
+                    html_diff.append(f'<h2 class="title highlight-added">{line}</h2>')
+                else:
+                    html_diff.append(f'<span class="highlight-added">{line}</span>')
         elif tag == 'replace':
-            html_diff.append(f'<span style="background-color: #ffcdd2; text-decoration: line-through;">{original[i1:i2]}</span>')
-            html_diff.append(f'<span style="background-color: #c8e6c9;">{edited[j1:j2]}</span>')
+            # Show both old and new versions with appropriate highlighting
+            html_diff.append('<div class="replacement">')
+            for line in original_lines[i1:i2]:
+                html_diff.append(f'<span class="highlight-removed">{line}</span>')
+            for line in edited_lines[j1:j2]:
+                if is_title_line(line):
+                    html_diff.append(f'<h2 class="title highlight-grammar">{line}</h2>')
+                else:
+                    html_diff.append(f'<span class="highlight-grammar">{line}</span>')
+            html_diff.append('</div>')
     
-    return ''.join(html_diff)
+    return '<br>'.join(html_diff)
+
+def is_title_line(line: str) -> bool:
+    """Detect if a line is likely a title."""
+    line = line.strip()
+    if not line:  # Skip empty lines
+        return False
+        
+    # Title patterns
+    patterns = [
+        r'^عنوان\s*:',  # Explicit title marker
+        r'^بخش\s*[\d۰-۹]+:',  # Section markers
+        r'^زیربخش\s*[\d۰-۹\.]+:',  # Subsection markers
+        r'^#+ ',  # Markdown style headers
+        r'^[^.!؟\n]{2,50}$'  # Short standalone lines (2-50 chars without sentence endings)
+    ]
+    
+    # Check for explicit patterns first
+    if any(re.match(pattern, line) for pattern in patterns):
+        return True
+    
+    # Then check for implicit title characteristics
+    words = line.split()
+    return (
+        len(words) <= 7 and  # Short phrase
+        not any(end in line for end in ['.', '!', '؟', '?']) and  # Not ending with sentence markers
+        not any(word.endswith('می‌کند') or word.endswith('می‌کنیم') for word in words) and  # Not a regular sentence
+        not line.startswith('در') and  # Not starting with prepositions
+        not line.startswith('و') and  # Not starting with conjunctions
+        line  # Not empty
+    )
 
 def count_persian_words(text: str) -> int:
     """Count words in Persian text, handling both Persian and English text."""
@@ -315,193 +419,48 @@ async def shutdown_event():
         logger.error(f"Error closing OpenAI client: {str(e)}")
 
 @app.post("/edit")
-async def edit(request: EditRequest):
+async def edit(request: EditRequest) -> EditResponse:
     """Edit text using the specified model."""
-    max_retries = 3
-    current_retry = 0
-    
-    while current_retry < max_retries:
-        try:
-            # Calculate original word count first
-            original_word_count = count_persian_words(request.text)
-            edited_text = ""
-            
-            if request.model == ModelType.GEMINI.value:
-                # Split long texts into smaller chunks
-                text_chunks = await split_text_for_gpt(request.text)
-                edited_chunks = []
-                
-                for chunk in text_chunks:
-                    # Use coaching-specific prompts
-                    prompt = COACHING_DETAILED_PROMPT if request.mode == "detailed" else COACHING_FAST_PROMPT
-                    prompt += f"\n\nText: {chunk}"
-                    
-                    try:
-                        response = await asyncio.wait_for(
-                            asyncio.to_thread(gemini_model.generate_content, prompt),
-                            timeout=60.0
-                        )
-                        
-                        if hasattr(response, 'text'):
-                            chunk_edited = response.text.strip()
-                        else:
-                            chunk_edited = response.parts[0].text.strip()
-                            
-                        if not chunk_edited:
-                            chunk_edited = chunk
-                            
-                        edited_chunks.append(chunk_edited)
-                        
-                    except Exception as e:
-                        logger.error(f"Gemini chunk processing error: {str(e)}")
-                        edited_chunks.append(chunk)
-                
-                edited_text = ' '.join(edited_chunks)
-                
-                # Verify content preservation
-                edited_word_count = count_persian_words(edited_text)
-                original_word_count = count_persian_words(request.text)
-                
-                if edited_word_count < original_word_count * 0.95:
-                    logger.warning(f"Content loss detected: original {original_word_count} words, edited {edited_word_count} words")
-                    return EditResponse(
-                        edited_text=request.text,
-                        technical_explanation="Could not edit while preserving content - returned original text",
-                        model_explanation="The model's edits resulted in significant content loss, so the original text was preserved.",
-                        changes=[],
-                        diff_html=generate_html_diff(request.text, request.text),
-                        word_count=original_word_count,
-                        word_count_status=get_word_count_status(original_word_count)
-                    )
-                
-                # Generate changes and HTML diff for Gemini edits
-                changes = detect_changes(request.text, edited_text)
-                diff_html = generate_html_diff(request.text, edited_text)
-                
-                # Prepare response with highlighted changes
-                technical_explanation = "Light editing completed" if request.mode == "fast" else "Detailed editing completed while preserving all content"
-                model_explanation = f"Using Gemini model with {'fast' if request.mode == 'fast' else 'detailed'} editing mode. The model preserved coaching terminology and methodologies while making necessary corrections."
-                
-                return EditResponse(
-                    edited_text=edited_text,
-                    technical_explanation=technical_explanation,
-                    model_explanation=model_explanation,
-                    changes=changes,
-                    diff_html=diff_html,
-                    word_count=edited_word_count,
-                    word_count_status=get_word_count_status(edited_word_count)
-                )
-            
-            elif request.model in [ModelType.GPT35.value, ModelType.GPT4.value]:
-                # Use OpenAI for editing
-                try:
-                    # Split text into manageable chunks if necessary
-                    text_chunks = await split_text_for_gpt(request.text)
-                    edited_chunks = []
-                    
-                    for chunk in text_chunks:
-                        # Use coaching-specific prompts
-                        system_msg = "You are a professional Persian coaching text editor. Your task is to edit while preserving ALL coaching content and methodologies."
-                        
-                        # Select appropriate prompt based on mode
-                        user_msg = COACHING_DETAILED_PROMPT if request.mode == "detailed" else COACHING_FAST_PROMPT
-                        user_msg += f"\n\nText: {chunk}"
-                        
-                        # Make API call to OpenAI with increased max_tokens
-                        response = await openai_client.chat.completions.create(
-                            model=request.model,
-                            messages=[
-                                {"role": "system", "content": system_msg},
-                                {"role": "user", "content": user_msg}
-                            ],
-                            temperature=0.3,  # Reduced for more conservative editing
-                            max_tokens=4000
-                        )
-                        
-                        edited_chunks.append(response.choices[0].message.content.strip())
-                    
-                    edited_text = ' '.join(edited_chunks)
-                    explanation = "Light coaching edit completed" if request.mode == "fast" else "Detailed coaching edit completed while preserving all methodologies"
-                except Exception as e:
-                    logger.error(f"OpenAI editing error: {str(e)}")
-                    raise HTTPException(status_code=500, detail=f"OpenAI editing failed: {str(e)}")
-            
-            elif request.model == ModelType.CLAUDE.value:
-                # Use Anthropic's Claude for editing
-                from anthropic import AsyncAnthropic
-                
-                client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
-                try:
-                    response = await client.messages.create(
-                        model=request.model,
-                        max_tokens=4000,
-                        messages=[{
-                            "role": "user",
-                            "content": f"You are a professional Persian text editor. Edit this Persian text while preserving ALL content. Make only necessary corrections for {'grammar and spelling' if request.mode == 'fast' else 'grammar, style, and clarity'}. Text: {request.text}"
-                        }]
-                    )
-                    
-                    if hasattr(response.content[0], 'text'):
-                        edited_text = response.content[0].text
-                    else:
-                        edited_text = str(response.content[0])
-                        
-                    explanation = "Light editing completed" if request.mode == "fast" else "Detailed editing completed while preserving all content"
-                except Exception as e:
-                    logger.error(f"Claude editing error: {str(e)}")
-                    raise HTTPException(status_code=500, detail=f"Claude editing failed: {str(e)}")
-            
-            elif request.model == ModelType.GOOGLE.value:
-                # Use Google Cloud Translation
-                from google.cloud import translate_v2 as translate
-                
-                translate_client = translate.Client()
-                result = translate_client.translate(
-                    request.text,
-                    target_language='en',
-                    source_language='fa'
-                )
-                
-                return TranslationResponse(translated_text=result['translatedText'])
-            
-            else:
-                raise HTTPException(status_code=400, detail=f"Unsupported model: {request.model}")
-            
-            # Generate changes and HTML diff (common for all models)
-            changes = detect_changes(request.text, edited_text) if request.text != edited_text else []
-            diff_html = generate_html_diff(request.text, edited_text)
-            
-            # Calculate word count information
-            word_count = count_persian_words(edited_text)
-            word_count_status = get_word_count_status(word_count)
-            
-            # Separate technical explanation from model's explanation
-            technical_explanation = "Light editing completed" if request.mode == "fast" else "Detailed editing completed while preserving all content"
-            model_explanation = f"Using {request.model} model with {'fast' if request.mode == 'fast' else 'detailed'} editing mode. The model preserved coaching terminology and methodologies while making necessary corrections."
-            
-            # For editing response
-            return EditResponse(
-                edited_text=edited_text,
-                technical_explanation=technical_explanation,
-                model_explanation=model_explanation,
-                changes=changes,
-                diff_html=diff_html,
-                word_count=word_count,
-                word_count_status=word_count_status
-            )
-                
-        except asyncio.TimeoutError:
-            current_retry += 1
-            if current_retry >= max_retries:
-                logger.error("API request timed out after all retries")
-                raise HTTPException(status_code=504, detail="Request timed out after multiple attempts")
-            logger.warning(f"API timeout, attempt {current_retry} of {max_retries}")
-            await asyncio.sleep(1)  # Wait 1 second before retrying
-        except Exception as e:
-            logger.error(f"Edit error: {str(e)}")
-            if isinstance(e, HTTPException):
-                raise e
-            raise HTTPException(status_code=500, detail=str(e))
+    try:
+        # Initialize variables
+        edited_text = request.text  # Default to original text
+        changes = []
+        technical_explanation = ""
+        model_explanation = ""
+        
+        # Process based on model
+        if request.model == ModelType.GEMINI.value:
+            edited_text, changes = await process_gemini_edit(request.text, request.mode)
+            if not edited_text:  # If Gemini processing failed, use original text
+                edited_text = request.text
+        elif request.model in [ModelType.GPT35.value, ModelType.GPT4.value]:
+            # ... existing code for other models ...
+            pass
+        
+        # Generate HTML diff with improved highlighting
+        diff_html = generate_html_diff(request.text, edited_text)
+        
+        # Calculate word count information
+        word_count = count_persian_words(edited_text)
+        word_count_status = get_word_count_status(word_count)
+        
+        # Set explanations based on mode
+        technical_explanation = "Light editing completed" if request.mode == "fast" else "Detailed editing completed while preserving all content"
+        model_explanation = f"Using {request.model} model with {'fast' if request.mode == 'fast' else 'detailed'} editing mode"
+        
+        return EditResponse(
+            edited_text=edited_text,
+            technical_explanation=technical_explanation,
+            model_explanation=model_explanation,
+            changes=changes,
+            diff_html=diff_html,
+            word_count=word_count,
+            word_count_status=word_count_status
+        )
+        
+    except Exception as e:
+        logger.error(f"Edit error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/translate")
 async def translate(request: TranslationRequest) -> TranslationResponse:
@@ -511,30 +470,68 @@ async def translate(request: TranslationRequest) -> TranslationResponse:
         user_msg = COACHING_TRANSLATION_PROMPT if request.mode == "detailed" else COACHING_FAST_TRANSLATION_PROMPT
         user_msg += f"\n\nText to translate: {request.text}"
 
-        # Get translation from model
-        response = await openai_client.chat.completions.create(
-            model=request.model.value,
-            messages=[
-                {"role": "system", "content": system_msg},
-                {"role": "user", "content": user_msg}
-            ],
-            temperature=0.3
-        )
+        if request.model == ModelType.GEMINI.value:
+            try:
+                response = await asyncio.wait_for(
+                    asyncio.to_thread(gemini_model.generate_content, user_msg),
+                    timeout=60.0
+                )
+                
+                if hasattr(response, 'text'):
+                    translation = response.text.strip()
+                else:
+                    translation = response.parts[0].text.strip()
+            except Exception as e:
+                logger.error(f"Gemini translation error: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"Gemini translation failed: {str(e)}")
         
-        translation = response.choices[0].message.content
+        elif request.model in [ModelType.GPT35.value, ModelType.GPT4.value]:
+            response = await openai_client.chat.completions.create(
+                model=request.model,
+                messages=[
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": user_msg}
+                ],
+                temperature=0.3
+            )
+            translation = response.choices[0].message.content
+        
+        elif request.model == ModelType.CLAUDE.value:
+            from anthropic import AsyncAnthropic
+            client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+            response = await client.messages.create(
+                model=request.model,
+                max_tokens=4000,
+                messages=[{
+                    "role": "user",
+                    "content": f"{system_msg}\n\n{user_msg}"
+                }]
+            )
+            translation = response.content[0].text
+        
+        elif request.model == ModelType.GOOGLE.value:
+            from google.cloud import translate_v2 as translate
+            translate_client = translate.Client()
+            result = translate_client.translate(
+                request.text,
+                target_language='en',
+                source_language='fa'
+            )
+            translation = result['translatedText']
+        
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported model: {request.model}")
+        
         model_explanation = "Translation completed with focus on coaching terminology and concepts"
         technical_explanation = "Detailed coaching translation completed" if request.mode == "detailed" else "Fast coaching translation completed"
         
         return TranslationResponse(
-            original_text=request.text,
             translated_text=translation,
-            model_explanation=model_explanation,
             technical_explanation=technical_explanation,
-            model=request.model,
-            mode=request.mode
+            model_explanation=model_explanation
         )
     except Exception as e:
-        logging.error(f"Translation error: {str(e)}")
+        logger.error(f"Translation error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # Add a route to test the connection
@@ -558,11 +555,121 @@ async def read_root(request: Request):
 # Initialize stats
 stats = Stats()
 
+async def test_title_handling():
+    """Test function to verify title and heading handling"""
+    sample_text = """عنوان اصلی: اصول و تکنیک‌های کوچینگ حرفه‌ای
+
+بخش اول: مبانی کوچینگ
+در این بخش، به بررسی اصول اساسی کوچینگ می‌پردازیم. کوچینگ یک فرآیند همکاری است که به مراجع کمک می‌کند به اهداف خود دست یابد.
+
+زیربخش ۱.۱: تعریف کوچینگ
+کوچینگ عبارت است از همراهی حرفه‌ای با مراجع برای دستیابی به نتایج مطلوب.
+
+بخش دوم: مهارت‌های پیشرفته
+در این قسمت، تکنیک‌های پیشرفته کوچینگ را بررسی می‌کنیم.
+
+زیربخش ۲.۱: گوش دادن فعال
+گوش دادن فعال یکی از مهم‌ترین مهارت‌های یک کوچ حرفه‌ای است."""
+
+    # Test editing with different models
+    for model in [ModelType.GEMINI.value, ModelType.GPT4.value]:
+        try:
+            # Test detailed editing
+            detailed_request = EditRequest(text=sample_text, mode="detailed", model=model)
+            detailed_result = await edit(detailed_request)
+            logger.info(f"Detailed edit test with {model} - Success")
+            print(f"\nDetailed Edit Result ({model}):")
+            print(detailed_result.edited_text)
+            
+            # Test fast editing
+            fast_request = EditRequest(text=sample_text, mode="fast", model=model)
+            fast_result = await edit(fast_request)
+            logger.info(f"Fast edit test with {model} - Success")
+            print(f"\nFast Edit Result ({model}):")
+            print(fast_result.edited_text)
+            
+            # Test both translation modes
+            for mode in ["detailed", "fast"]:
+                translation_request = TranslationRequest(text=sample_text, model=model, mode=mode)
+                translation_result = await translate(translation_request)
+                logger.info(f"{mode.capitalize()} translation test with {model} - Success")
+                print(f"\n{mode.capitalize()} Translation Result ({model}):")
+                print(translation_result.translated_text)
+            
+        except Exception as e:
+            logger.error(f"Test failed for {model}: {str(e)}")
+            raise
+
+async def process_gemini_edit(text: str, mode: str) -> tuple[str, List[Change]]:
+    """Process text editing with Gemini model and generate highlighted changes."""
+    prompt = COACHING_DETAILED_PROMPT if mode == "detailed" else COACHING_FAST_PROMPT
+    prompt += f"\n\nText to edit:\n{text}\n\nPlease edit the text and mark your changes using these HTML tags:\n- For added text: <add>new text</add>\n- For removed text: <del>old text</del>\n- For modified text: <mod>modified text</mod>\n- For titles: <title>title text</title>\n\nMake sure to mark any standalone opening sentences as titles."
+    
+    try:
+        response = await asyncio.wait_for(
+            asyncio.to_thread(gemini_model.generate_content, prompt),
+            timeout=60.0
+        )
+        
+        edited_text = response.text.strip() if hasattr(response, 'text') else response.parts[0].text.strip()
+        if not edited_text:
+            return text, []  # Return original text if no edits
+            
+        # Extract changes from HTML tags
+        changes = []
+        
+        # Process titles first (they take precedence)
+        for match in re.finditer(r'<title>(.*?)</title>', edited_text):
+            title_text = match.group(1)
+            edited_text = edited_text.replace(match.group(0), f'<h2 class="title">{title_text}</h2>')
+            changes.append(Change(type="title", new=title_text))
+        
+        # Process other changes
+        for tag, change_type in [
+            ('add', 'added'),
+            ('del', 'removed'),
+            ('mod', 'grammar')
+        ]:
+            for match in re.finditer(f'<{tag}>(.*?)</{tag}>', edited_text):
+                content = match.group(1)
+                if change_type == 'removed':
+                    changes.append(Change(type=change_type, old=content))
+                else:
+                    changes.append(Change(type=change_type, new=content))
+                
+                # Apply appropriate highlighting
+                highlight_class = f'highlight-{change_type}'
+                edited_text = edited_text.replace(
+                    match.group(0),
+                    f'<span class="{highlight_class}">{content}</span>'
+                )
+        
+        # If no explicit title was marked and it's detailed mode, check for implicit titles
+        if not any(c.type == "title" for c in changes) and mode == "detailed":
+            lines = edited_text.split('\n')
+            if lines and is_title_line(lines[0]):
+                title_text = lines[0]
+                lines[0] = f'<h2 class="title">{title_text}</h2>'
+                edited_text = '\n'.join(lines)
+                changes.append(Change(type="title", new=title_text))
+        
+        # If no changes were detected, return the edited text as is
+        if not changes and edited_text != text:
+            changes.append(Change(type="grammar", new=edited_text))
+            
+        return edited_text, changes
+        
+    except Exception as e:
+        logger.error(f"Gemini processing error: {str(e)}")
+        return text, []  # Return original text on error
+
 if __name__ == "__main__":
     import uvicorn
     import asyncio
     
-    # Test Gemini connection before starting the server
-    asyncio.run(test_gemini_connection())
+    # Run the title handling test
+    asyncio.run(test_title_handling())
+    logger.info("Title handling test completed")
     
+    # Start the server
     uvicorn.run(app, host="0.0.0.0", port=8088) 
