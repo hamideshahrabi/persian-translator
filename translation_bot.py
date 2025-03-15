@@ -19,6 +19,50 @@ import openai
 import asyncio
 from functools import lru_cache
 
+# Coaching-specific prompts
+COACHING_DETAILED_PROMPT = """Edit this Persian coaching text focusing on:
+1. Grammar and syntax corrections
+2. Paragraph structure and flow
+3. Punctuation and spacing
+4. Word choice and consistency
+5. Sentence structure clarity
+6. Professional coaching terminology accuracy
+7. Formatting consistency
+
+DO NOT:
+- Change core concepts or definitions
+- Alter coaching methodologies
+- Modify exercise instructions
+- Rewrite content meanings
+
+Make ONLY technical corrections that improve readability while preserving the exact meaning."""
+
+COACHING_FAST_PROMPT = """Quick edit of this Persian text focusing ONLY on:
+1. Basic grammar fixes
+2. Obvious typos
+3. Clear punctuation errors
+4. Basic sentence structure issues
+
+Keep everything else exactly as is."""
+
+COACHING_TRANSLATION_PROMPT = """Translate this Persian coaching text to English with these requirements:
+1. Preserve all coaching methodologies and concepts exactly
+2. Maintain professional coaching terminology
+3. Keep the same tone and style
+4. Preserve paragraph structure
+5. Maintain all examples and exercises in their original form
+6. Keep any specialized coaching terms in their professional form
+
+Focus on accuracy of coaching concepts over literary style."""
+
+COACHING_FAST_TRANSLATION_PROMPT = """Quick translation of this Persian coaching text to English:
+1. Maintain core coaching concepts
+2. Keep professional terminology
+3. Preserve exercise instructions
+4. Maintain basic structure
+
+Prioritize preserving coaching meaning over style."""
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -60,7 +104,8 @@ class Change(BaseModel):
 
 class EditResponse(BaseModel):
     edited_text: str
-    explanation: str
+    technical_explanation: str  # Technical details about what was changed
+    model_explanation: str  # Model's explanation of its editing process
     changes: List[Change]
     diff_html: str
     word_count: int
@@ -68,6 +113,8 @@ class EditResponse(BaseModel):
 
 class TranslationResponse(BaseModel):
     translated_text: str
+    technical_explanation: str  # Technical details about the translation
+    model_explanation: str  # Model's explanation of its translation process
 
 # Setup templates
 templates = Jinja2Templates(directory="templates")
@@ -256,7 +303,9 @@ async def split_text_for_gpt(text: str) -> List[str]:
     return chunks
 
 # Initialize API clients
-openai_client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
+openai_client = openai.AsyncOpenAI(
+    api_key=OPENAI_API_KEY
+)
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -274,7 +323,7 @@ async def edit(request: EditRequest):
     while current_retry < max_retries:
         try:
             # Calculate original word count first
-            original_words = count_persian_words(request.text)
+            original_word_count = count_persian_words(request.text)
             edited_text = ""
             
             if request.model == ModelType.GEMINI.value:
@@ -283,20 +332,11 @@ async def edit(request: EditRequest):
                 edited_chunks = []
                 
                 for chunk in text_chunks:
-                    # Enhanced prompt emphasizing text preservation with explicit length instruction
-                    prompt = f"""Edit this Persian text while preserving ALL content. The text MUST maintain approximately the same length.
-Rules:
-1. Do not remove or drop any parts of the text
-2. Keep all original content and meaning
-3. Only fix grammar, spelling, and style issues
-4. Maintain the exact same topics and ideas
-5. If something seems redundant, still keep it
-
-Make only necessary corrections for {'grammar and spelling' if request.mode == 'fast' else 'grammar, style, clarity and professional tone'}.
-Text: {chunk}"""
+                    # Use coaching-specific prompts
+                    prompt = COACHING_DETAILED_PROMPT if request.mode == "detailed" else COACHING_FAST_PROMPT
+                    prompt += f"\n\nText: {chunk}"
                     
                     try:
-                        # Increased timeout to 60 seconds for thorough processing
                         response = await asyncio.wait_for(
                             asyncio.to_thread(gemini_model.generate_content, prompt),
                             timeout=60.0
@@ -305,36 +345,53 @@ Text: {chunk}"""
                         if hasattr(response, 'text'):
                             chunk_edited = response.text.strip()
                         else:
-                            # Try alternative response format
                             chunk_edited = response.parts[0].text.strip()
                             
-                        if not chunk_edited:  # If empty response
-                            chunk_edited = chunk  # Keep original chunk
+                        if not chunk_edited:
+                            chunk_edited = chunk
                             
                         edited_chunks.append(chunk_edited)
                         
                     except Exception as e:
                         logger.error(f"Gemini chunk processing error: {str(e)}")
-                        edited_chunks.append(chunk)  # Keep original chunk on error
+                        edited_chunks.append(chunk)
                 
-                # Join all chunks
                 edited_text = ' '.join(edited_chunks)
                 
                 # Verify content preservation
                 edited_word_count = count_persian_words(edited_text)
-                if edited_word_count < original_words * 0.95:
-                    logger.warning(f"Content loss detected: original {original_words} words, edited {edited_word_count} words")
+                original_word_count = count_persian_words(request.text)
+                
+                if edited_word_count < original_word_count * 0.95:
+                    logger.warning(f"Content loss detected: original {original_word_count} words, edited {edited_word_count} words")
                     return EditResponse(
                         edited_text=request.text,
-                        explanation="Could not edit while preserving content - returned original text",
+                        technical_explanation="Could not edit while preserving content - returned original text",
+                        model_explanation="The model's edits resulted in significant content loss, so the original text was preserved.",
                         changes=[],
                         diff_html=generate_html_diff(request.text, request.text),
-                        word_count=original_words,
-                        word_count_status=get_word_count_status(original_words)
+                        word_count=original_word_count,
+                        word_count_status=get_word_count_status(original_word_count)
                     )
                 
-                explanation = "Light editing completed" if request.mode == "fast" else "Detailed editing completed while preserving all content"
+                # Generate changes and HTML diff for Gemini edits
+                changes = detect_changes(request.text, edited_text)
+                diff_html = generate_html_diff(request.text, edited_text)
                 
+                # Prepare response with highlighted changes
+                technical_explanation = "Light editing completed" if request.mode == "fast" else "Detailed editing completed while preserving all content"
+                model_explanation = f"Using Gemini model with {'fast' if request.mode == 'fast' else 'detailed'} editing mode. The model preserved coaching terminology and methodologies while making necessary corrections."
+                
+                return EditResponse(
+                    edited_text=edited_text,
+                    technical_explanation=technical_explanation,
+                    model_explanation=model_explanation,
+                    changes=changes,
+                    diff_html=diff_html,
+                    word_count=edited_word_count,
+                    word_count_status=get_word_count_status(edited_word_count)
+                )
+            
             elif request.model in [ModelType.GPT35.value, ModelType.GPT4.value]:
                 # Use OpenAI for editing
                 try:
@@ -343,13 +400,12 @@ Text: {chunk}"""
                     edited_chunks = []
                     
                     for chunk in text_chunks:
-                        # Enhanced system message emphasizing content preservation
-                        system_msg = """You are a Persian text editor. Your task is to edit the text while preserving ALL content.
-Never remove or drop any parts of the text. Make only necessary corrections for grammar and clarity.
-If the text seems repetitive or redundant, still preserve it as the author intended."""
+                        # Use coaching-specific prompts
+                        system_msg = "You are a professional Persian coaching text editor. Your task is to edit while preserving ALL coaching content and methodologies."
                         
-                        user_msg = f"""Edit this Persian text while preserving ALL content. Make only necessary corrections for {'grammar and spelling' if request.mode == 'fast' else 'grammar, style, and clarity'}.
-Important: Return the COMPLETE text with your edits. Text: {chunk}"""
+                        # Select appropriate prompt based on mode
+                        user_msg = COACHING_DETAILED_PROMPT if request.mode == "detailed" else COACHING_FAST_PROMPT
+                        user_msg += f"\n\nText: {chunk}"
                         
                         # Make API call to OpenAI with increased max_tokens
                         response = await openai_client.chat.completions.create(
@@ -365,7 +421,7 @@ Important: Return the COMPLETE text with your edits. Text: {chunk}"""
                         edited_chunks.append(response.choices[0].message.content.strip())
                     
                     edited_text = ' '.join(edited_chunks)
-                    explanation = "Light editing completed" if request.mode == "fast" else "Detailed editing completed while preserving all content"
+                    explanation = "Light coaching edit completed" if request.mode == "fast" else "Detailed coaching edit completed while preserving all methodologies"
                 except Exception as e:
                     logger.error(f"OpenAI editing error: {str(e)}")
                     raise HTTPException(status_code=500, detail=f"OpenAI editing failed: {str(e)}")
@@ -419,9 +475,15 @@ Important: Return the COMPLETE text with your edits. Text: {chunk}"""
             word_count = count_persian_words(edited_text)
             word_count_status = get_word_count_status(word_count)
             
+            # Separate technical explanation from model's explanation
+            technical_explanation = "Light editing completed" if request.mode == "fast" else "Detailed editing completed while preserving all content"
+            model_explanation = f"Using {request.model} model with {'fast' if request.mode == 'fast' else 'detailed'} editing mode. The model preserved coaching terminology and methodologies while making necessary corrections."
+            
+            # For editing response
             return EditResponse(
                 edited_text=edited_text,
-                explanation=explanation,
+                technical_explanation=technical_explanation,
+                model_explanation=model_explanation,
                 changes=changes,
                 diff_html=diff_html,
                 word_count=word_count,
@@ -442,101 +504,37 @@ Important: Return the COMPLETE text with your edits. Text: {chunk}"""
             raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/translate")
-async def translate(request: TranslationRequest):
-    """Translate text using the specified model."""
+async def translate(request: TranslationRequest) -> TranslationResponse:
     try:
-        if request.model == ModelType.GEMINI.value:
-            # Use Gemini for translation
-            prompt = f"""Translate this Persian text to English. Maintain the meaning and tone of the original text.
-Keep any technical terms accurate. Text: {request.text}"""
-            
-            try:
-                response = await asyncio.wait_for(
-                    asyncio.to_thread(gemini_model.generate_content, prompt),
-                    timeout=60.0
-                )
-                
-                if hasattr(response, 'text'):
-                    translated_text = response.text.strip()
-                else:
-                    # Try alternative response format
-                    translated_text = response.parts[0].text.strip()
-                
-                if not translated_text:  # If empty response
-                    raise HTTPException(status_code=500, detail="Empty response from Gemini API")
-                
-                return TranslationResponse(translated_text=translated_text)
-                
-            except asyncio.TimeoutError:
-                raise HTTPException(status_code=504, detail="Gemini API request timed out")
-            except Exception as e:
-                logger.error(f"Gemini translation error: {str(e)}")
-                raise HTTPException(status_code=500, detail=f"Gemini translation failed: {str(e)}")
-            
-        elif request.model in [ModelType.GPT35.value, ModelType.GPT4.value]:
-            # Use OpenAI for translation
-            try:
-                response = await openai_client.chat.completions.create(
-                    model=request.model,
-                    messages=[
-                        {"role": "system", "content": "You are a professional Persian to English translator. Translate the text accurately while maintaining its meaning and tone."},
-                        {"role": "user", "content": f"Translate this Persian text to English: {request.text}"}
-                    ],
-                    temperature=0.3
-                )
-                
-                return TranslationResponse(translated_text=response.choices[0].message.content.strip())
-            except Exception as e:
-                logger.error(f"OpenAI translation error: {str(e)}")
-                raise HTTPException(status_code=500, detail=f"OpenAI translation failed: {str(e)}")
-            
-        elif request.model == ModelType.CLAUDE.value:
-            # Use Anthropic's Claude for translation
-            from anthropic import AsyncAnthropic
-            
-            client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
-            try:
-                response = await client.messages.create(
-                    model=request.model,
-                    max_tokens=4000,
-                    messages=[{
-                        "role": "user",
-                        "content": f"You are a professional Persian to English translator. Translate this Persian text to English accurately while maintaining its meaning and tone: {request.text}"
-                    }]
-                )
-                
-                if hasattr(response.content[0], 'text'):
-                    translated_text = response.content[0].text
-                else:
-                    translated_text = str(response.content[0])
-                
-                return TranslationResponse(translated_text=translated_text)
-            except Exception as e:
-                logger.error(f"Claude translation error: {str(e)}")
-                raise HTTPException(status_code=500, detail=f"Claude translation failed: {str(e)}")
-            
-        elif request.model == ModelType.GOOGLE.value:
-            # Use Google Cloud Translation
-            from google.cloud import translate_v2 as translate
-            
-            translate_client = translate.Client()
-            result = translate_client.translate(
-                request.text,
-                target_language='en',
-                source_language='fa'
-            )
-            
-            return TranslationResponse(translated_text=result['translatedText'])
-            
-        else:
-            raise HTTPException(status_code=400, detail=f"Unsupported model: {request.model}")
-            
-    except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="Translation request timed out")
+        # Get the appropriate prompt based on mode
+        system_msg = "You are a professional translator specializing in coaching and professional development content."
+        user_msg = COACHING_TRANSLATION_PROMPT if request.mode == "detailed" else COACHING_FAST_TRANSLATION_PROMPT
+        user_msg += f"\n\nText to translate: {request.text}"
+
+        # Get translation from model
+        response = await openai_client.chat.completions.create(
+            model=request.model.value,
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_msg}
+            ],
+            temperature=0.3
+        )
+        
+        translation = response.choices[0].message.content
+        model_explanation = "Translation completed with focus on coaching terminology and concepts"
+        technical_explanation = "Detailed coaching translation completed" if request.mode == "detailed" else "Fast coaching translation completed"
+        
+        return TranslationResponse(
+            original_text=request.text,
+            translated_text=translation,
+            model_explanation=model_explanation,
+            technical_explanation=technical_explanation,
+            model=request.model,
+            mode=request.mode
+        )
     except Exception as e:
-        logger.error(f"Translation error: {str(e)}")
-        if isinstance(e, HTTPException):
-            raise e
+        logging.error(f"Translation error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # Add a route to test the connection
