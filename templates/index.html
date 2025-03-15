@@ -282,17 +282,17 @@
         <div class="text-section">
             <div class="section-title">Translate to English</div>
             <div class="model-selection">
-                <select id="model">
+                <select id="translateModel">
                     <option value="gemini-1.5-pro" selected>Gemini Pro (Advanced AI)</option>
                     <option value="gpt-3.5-turbo">GPT-3.5 Turbo (Fast & Good)</option>
                     <option value="gpt-4">GPT-4 (Most Accurate)</option>
                     <option value="claude-3-opus-20240229">Claude-3 (Accurate)</option>
                     <option value="google-translate">Google Cloud Translation (Basic)</option>
                 </select>
-                <div id="modelInfo" class="model-info"></div>
+                <div class="model-info">Choose your preferred translation model. Each has different strengths.</div>
             </div>
-            <button id="translateButton">Translate</button>
-            <div id="result"></div>
+            <button id="translateButton" onclick="translateText()">Translate</button>
+            <div id="translationResult" class="edited-text" style="text-align: left; direction: ltr;"></div>
         </div>
     </div>
 
@@ -455,8 +455,8 @@
         // Handle text translation
         async function translateText() {
             const text = document.getElementById("editedText").textContent || document.getElementById("persianText").value;
-            const model = document.getElementById("model").value;
-            const result = document.getElementById("result");
+            const model = document.getElementById("translateModel").value;
+            const result = document.getElementById("translationResult");
             
             if (!text.trim()) {
                 result.innerHTML = '<span class="error">Please enter some text to translate</span>';
