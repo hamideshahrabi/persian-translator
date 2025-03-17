@@ -53,6 +53,7 @@
             background-color: #f8f9fa;
             text-align: right;
             direction: rtl;
+            line-height: 1.6;
         }
         .explanation {
             margin-top: 15px;
@@ -165,35 +166,38 @@
             margin-top: 20px;
         }
         .result-box {
-            background: #ffffff;
-            border: 1px solid #e0e0e0;
+            background: white;
             border-radius: 8px;
-            padding: 15px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
         .result-title {
             font-weight: bold;
             color: #333;
-            margin-bottom: 10px;
+            margin-bottom: 15px;
             font-size: 1.1em;
+            border-bottom: 2px solid #2196F3;
+            padding-bottom: 5px;
         }
-        .edited-text {
+        .result-subtitle {
+            font-weight: bold;
+            color: #666;
+            margin-bottom: 10px;
+            font-size: 0.9em;
+        }
+        .text-view {
             background-color: #f8f9fa;
             border: 1px solid #e0e0e0;
             border-radius: 8px;
             padding: 15px;
             margin: 0;
             font-size: 16px;
-            line-height: 1.6;
-        }
-        .explanation {
-            background-color: #e3f2fd;
-            border: 1px solid #bbdefb;
-            border-radius: 8px;
-            padding: 15px;
-            margin: 0;
-            font-size: 14px;
-            line-height: 1.6;
-            color: #1976D2;
+            line-height: 1.8;
+            min-height: 100px;
+            white-space: pre-wrap;
+            direction: rtl;
+            text-align: right;
         }
         .word-count-info {
             background-color: #e8f5e9;
@@ -218,24 +222,26 @@
         }
         .highlight-punctuation {
             background-color: yellow;
+            padding: 2px 4px;
         }
         .highlight-added {
-            background-color: lightgreen;
+            background-color: #e8f5e9;
+            color: #1b5e20;
+            padding: 2px 4px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.1);
         }
         .highlight-removed {
             background-color: #ffebee;
             text-decoration: line-through;
             color: #b71c1c;
-            display: block;
-            padding: 4px;
-            margin: 2px 0;
+            padding: 2px 4px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.1);
         }
         .highlight-grammar {
             background-color: #e3f2fd;
             color: #0d47a1;
-            display: block;
-            padding: 4px;
-            margin: 2px 0;
+            padding: 2px 4px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.1);
         }
         .title {
             font-size: 1.2em;
@@ -260,52 +266,136 @@
             line-height: 1.6;
             white-space: pre-wrap;
         }
+        .diff-container {
+            direction: rtl;
+            text-align: right;
+            padding: 10px;
+            margin: 10px 0;
+            font-family: Arial, sans-serif;
+        }
+        .diff-paragraph {
+            direction: rtl;
+            text-align: right;
+            line-height: 1.6;
+            margin: 0;
+            padding: 0;
+        }
+        .diff-added-text {
+            background-color: #e6ffe6;
+            border-bottom: 1px solid #4caf50;
+            padding: 0 2px;
+            display: inline;
+        }
+        .diff-removed-text {
+            background-color: #ffe6e6;
+            border-bottom: 1px solid #f44336;
+            text-decoration: line-through;
+            padding: 0 2px;
+            display: inline;
+        }
+        .text-view {
+            direction: rtl;
+            text-align: right;
+            background-color: #f9f9f9;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+        #translationResult {
+            background-color: #ffffff;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 10px 0;
+            font-size: 16px;
+            line-height: 1.8;
+            white-space: pre-wrap;
+            direction: ltr;
+            text-align: left;
+            user-select: text;
+            -webkit-user-select: text;
+            -moz-user-select: text;
+            -ms-user-select: text;
+            cursor: text;
+        }
+        #translationResult p {
+            margin: 0 0 1.5em 0;
+        }
+        #translationResult p:last-child {
+            margin-bottom: 0;
+        }
+        .copy-button {
+            background-color: #2196F3;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 8px 16px;
+            margin: 10px 0;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background-color 0.3s;
+            display: block;
+        }
+        .copy-button:hover {
+            background-color: #1976D2;
+        }
+        .copy-button:active {
+            background-color: #1565C0;
+        }
     </style>
 </head>
 <body>
     <h1>Persian Text Editor and Translator</h1>
     <div class="container">
-        <!-- Persian Text Editor Section -->
         <div class="text-section">
-            <div class="section-title">Persian Text Editor</div>
+            <h2>Persian Text Editor</h2>
             <div class="mode-selection">
+                <label for="editMode">Edit Mode:</label>
                 <select id="editMode">
-                    <option value="fast">Fast Edit (Grammar & Spelling)</option>
-                    <option value="detailed">Detailed Edit (Professional & Coaching)</option>
+                    <option value="fast" selected>Fast Edit</option>
+                    <option value="detailed">Detailed Edit</option>
                 </select>
-                <div class="mode-info">Fast mode: Quick grammar and spelling fixes. Detailed mode: Deep professional content enhancement.</div>
+                <div class="mode-info">
+                    Fast Edit: Quick corrections without detailed explanations<br>
+                    Detailed Edit: Comprehensive editing with explanations
+                </div>
             </div>
             <div class="model-selection">
+                <label for="editModel">Model:</label>
                 <select id="editModel">
-                    <option value="gemini-1.5-pro" selected>Gemini Pro (Advanced AI)</option>
-                    <option value="gpt-3.5-turbo">GPT-3.5 Turbo (Fast & Good)</option>
-                    <option value="gpt-4">GPT-4 (Most Accurate)</option>
-                    <option value="claude-3-opus-20240229">Claude-3 (Accurate)</option>
+                    <option value="models/gemini-1.5-pro" selected>Gemini Pro</option>
+                    <option value="gpt-4-turbo-preview">GPT-4</option>
+                    <option value="gpt-3.5-turbo">GPT-3.5</option>
                 </select>
-                <div id="editModelInfo" class="model-info"></div>
+                <div id="editModelInfo" class="model-info">
+                    Google's advanced AI model, excellent for context and cultural nuances
+                </div>
             </div>
             <textarea id="persianText" dir="rtl" placeholder="Enter your Persian text here..."></textarea>
-            <button onclick="editText()">Edit Text</button>
-            <div id="wordCountInfo" class="word-count-info"></div>
-            <div id="editLoading" class="loading" style="display: none;">Processing</div>
+            <div id="wordCountInfo" class="word-count-info">Word count: 0</div>
+            <button id="editButton" type="button">Edit Text</button>
+            <div id="editLoading" class="loading" style="display: none;">Editing text</div>
             <div id="editError" class="error" style="display: none;"></div>
-            
-            <!-- New diff view container -->
-            <div id="diffView" style="display: none; margin-top: 20px;">
+        </div>
+
+        <div id="diffViewContainer" class="results-container" style="display: none;">
+            <div class="result-box">
+                <div class="result-title">Side by Side Comparison</div>
                 <div style="display: flex; gap: 20px;">
                     <div style="flex: 1;">
-                        <div class="result-title">Original Text</div>
-                        <div id="originalText" class="edited-text" dir="rtl" style="background-color: #f8f9fa;"></div>
+                        <div class="result-subtitle">Original Text</div>
+                        <div id="originalTextView" class="text-view"></div>
                     </div>
                     <div style="flex: 1;">
-                        <div class="result-title">Edited Text</div>
-                        <div id="editedText" class="edited-text" dir="rtl" style="background-color: #f8f9fa;"></div>
+                        <div class="result-subtitle">Edited Text</div>
+                        <div id="editedTextView" class="text-view"></div>
                     </div>
                 </div>
-                <div style="margin-top: 20px;">
-                    <div class="result-title">Combined View with Changes</div>
-                    <div id="diffHtml" class="edited-text" dir="rtl" style="background-color: #fff;"></div>
-                </div>
+            </div>
+            
+            <div class="result-box">
+                <div class="result-title">Changes View</div>
+                <div id="diffHtmlView"></div>
             </div>
         </div>
 
@@ -313,32 +403,18 @@
         <div class="text-section">
             <div class="section-title">Translate to English</div>
             <div class="model-selection">
+                <label for="translateModel">Model:</label>
                 <select id="translateModel">
-                    <option value="gemini-1.5-pro" selected>Gemini Pro (Advanced AI)</option>
-                    <option value="gpt-3.5-turbo">GPT-3.5 Turbo (Fast & Good)</option>
-                    <option value="gpt-4">GPT-4 (Most Accurate)</option>
-                    <option value="claude-3-opus-20240229">Claude-3 (Accurate)</option>
-                    <option value="google-translate">Google Cloud Translation (Basic)</option>
+                    <option value="gpt-4">GPT-4</option>
+                    <option value="gpt-3.5-turbo">GPT-3.5</option>
+                    <option value="claude-3-opus-20240229">Claude 3</option>
+                    <option value="models/gemini-1.5-pro">Gemini Pro</option>
+                    <option value="google-translate">Google Translate</option>
                 </select>
                 <div class="model-info">Choose your preferred translation model. Each has different strengths.</div>
             </div>
-            <button id="translateButton" onclick="translateText()">Translate</button>
+            <button id="translateButton" type="button">Translate</button>
             <div id="translationResult" class="edited-text" style="text-align: left; direction: ltr;"></div>
-        </div>
-    </div>
-
-    <div class="results-container">
-        <div class="result-box">
-            <div class="result-title">Edited Text</div>
-            <div id="editedText" class="edited-text" dir="rtl"></div>
-        </div>
-        <div class="result-box">
-            <div class="result-title">Changes Explanation</div>
-            <div id="explanation" class="explanation"></div>
-        </div>
-        <div class="result-box">
-            <div class="result-title">Highlighted Changes</div>
-            <div id="diffView" class="edited-text" dir="rtl"></div>
         </div>
     </div>
 
@@ -352,8 +428,8 @@
             // Add event listeners
             document.getElementById("editButton").addEventListener("click", editText);
             document.getElementById("translateButton").addEventListener("click", translateText);
-            document.getElementById("model").addEventListener("change", updateModelInfo);
             document.getElementById("editModel").addEventListener("change", updateModelInfo);
+            document.getElementById("translateModel").addEventListener("change", updateModelInfo);
             document.getElementById("persianText").addEventListener("input", updateWordCount);
             document.getElementById("persianText").addEventListener("keyup", updateWordCount);
             document.getElementById("persianText").addEventListener("keypress", (e) => {
@@ -398,21 +474,19 @@
 
         // Update model information display
         function updateModelInfo() {
-            const model = document.getElementById("model").value;
-            const modelInfo = document.getElementById("modelInfo");
             const editModel = document.getElementById("editModel").value;
             const editModelInfo = document.getElementById("editModelInfo");
+            const translateModel = document.getElementById("translateModel").value;
             
             const modelDescriptions = {
                 "gpt-3.5-turbo": "Fast and reliable processing with good accuracy",
                 "gpt-4": "Most accurate processing, better understanding of context and nuances",
                 "claude-3-opus-20240229": "Advanced AI model with strong understanding of Persian language",
                 "google-translate": "Basic machine translation, good for simple texts",
-                "gemini-1.5-pro": "Google's advanced AI model, excellent for context and cultural nuances"
+                "models/gemini-1.5-pro": "Google's advanced AI model, excellent for context and cultural nuances"
             };
             
-            modelInfo.textContent = modelDescriptions[model];
-            editModelInfo.textContent = modelDescriptions[editModel];
+            editModelInfo.textContent = modelDescriptions[editModel] || modelDescriptions["gpt-4"];
         }
 
         // Handle text editing
@@ -428,7 +502,7 @@
             
             document.getElementById('editLoading').style.display = 'flex';
             document.getElementById('editError').style.display = 'none';
-            document.getElementById('diffView').style.display = 'none';
+            document.getElementById('diffViewContainer').style.display = 'none';
             
             try {
                 const response = await fetch('/edit', {
@@ -446,61 +520,80 @@
                 const result = await response.json();
                 
                 if (response.ok) {
-                    // Show the diff view
-                    document.getElementById('diffView').style.display = 'block';
+                    // Show the diff view container
+                    const diffViewContainer = document.getElementById('diffViewContainer');
+                    diffViewContainer.style.display = 'block';
                     
                     // Display original text
-                    document.getElementById('originalText').textContent = text;
+                    document.getElementById('originalTextView').textContent = text;
                     
-                    // Display edited text with highlights
-                    const editedTextDiv = document.getElementById('editedText');
-                    editedTextDiv.innerHTML = result.diff_html;
+                    // Display edited text
+                    document.getElementById('editedTextView').textContent = result.edited_text;
                     
-                    // Display combined view with highlighted changes
-                    document.getElementById('diffHtml').innerHTML = result.diff_html;
+                    // Display diff view with highlighted changes
+                    const diffHtmlView = document.getElementById('diffHtmlView');
+                    diffHtmlView.innerHTML = '';  // Clear previous content
                     
-                    // Display word count information
-                    const wordCountInfo = document.getElementById('wordCountInfo');
-                    wordCountInfo.textContent = `Word Count: ${result.word_count} - ${result.word_count_status}`;
+                    // Create a container for the diff view with proper direction
+                    const diffContainer = document.createElement('div');
+                    diffContainer.className = 'diff-container';
                     
-                    // Add appropriate color class based on status
-                    wordCountInfo.className = 'word-count-info';
-                    if (result.word_count_status.includes('Need')) {
-                        wordCountInfo.classList.add('word-count-warning');
-                    } else if (result.word_count_status.includes('Exceeds')) {
-                        wordCountInfo.classList.add('word-count-warning');
-                    } else {
-                        wordCountInfo.classList.add('word-count-success');
-                    }
+                    // Add copy button
+                    const copyBtn = document.createElement('button');
+                    copyBtn.textContent = 'Copy Edited Text';
+                    copyBtn.className = 'copy-button';
+                    copyBtn.onclick = () => {
+                        navigator.clipboard.writeText(result.edited_text).then(() => {
+                            copyBtn.textContent = 'Copied!';
+                            setTimeout(() => {
+                                copyBtn.textContent = 'Copy Edited Text';
+                            }, 2000);
+                        });
+                    };
                     
+                    diffHtmlView.appendChild(copyBtn);
+                    
+                    // Create a paragraph for the diff content
+                    const diffParagraph = document.createElement('p');
+                    diffParagraph.className = 'diff-paragraph';
+                    diffParagraph.innerHTML = result.diff_html;
+                    
+                    diffContainer.appendChild(diffParagraph);
+                    diffHtmlView.appendChild(diffContainer);
+                    
+                    // Update word count information
+                    updateWordCount();
+                    
+                    // Hide loading indicator
+                    document.getElementById('editLoading').style.display = 'none';
                 } else {
                     showError(result.detail || 'Error editing text');
                 }
             } catch (error) {
                 showError('Error connecting to the server');
-            } finally {
+                console.error('Edit error:', error);
                 document.getElementById('editLoading').style.display = 'none';
             }
         }
 
         // Handle text translation
         async function translateText() {
-            const text = document.getElementById("editedText").textContent || document.getElementById("persianText").value;
-            const model = document.getElementById("translateModel").value;
-            const result = document.getElementById("translationResult");
+            const text = document.getElementById('editedTextView').textContent || document.getElementById('persianText').value;
+            const model = document.getElementById('translateModel').value;
+            const translationResult = document.getElementById('translationResult');
             
             if (!text.trim()) {
-                result.innerHTML = '<span class="error">Please enter some text to translate</span>';
+                translationResult.innerHTML = '<span class="error">Please enter some text to translate</span>';
                 return;
             }
             
-            result.innerHTML = '<span class="loading">Translating...</span>';
+            translationResult.innerHTML = '<span class="loading">Translating...</span>';
             
             try {
-                const response = await fetch("/translate", {
-                    method: "POST",
+                const response = await fetch('/translate', {
+                    method: 'POST',
                     headers: {
-                        "Content-Type": "application/json"
+                        'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
                         text: text,
@@ -508,16 +601,35 @@
                     })
                 });
                 
-                if (!response.ok) {
-                    const data = await response.json();
-                    throw new Error(data.detail || "Translation failed");
-                }
+                const result = await response.json();
                 
-                const data = await response.json();
-                result.innerHTML = data.translated_text;
+                if (response.ok) {
+                    // Create a wrapper for the translation
+                    const translationWrapper = document.createElement('div');
+                    translationWrapper.innerHTML = result.translated_text;
+                    
+                    // Add copy button for translation
+                    const copyBtn = document.createElement('button');
+                    copyBtn.textContent = 'Copy Translation';
+                    copyBtn.className = 'copy-button';
+                    copyBtn.onclick = () => {
+                        navigator.clipboard.writeText(result.translated_text).then(() => {
+                            copyBtn.textContent = 'Copied!';
+                            setTimeout(() => {
+                                copyBtn.textContent = 'Copy Translation';
+                            }, 2000);
+                        });
+                    };
+                    
+                    translationResult.innerHTML = '';
+                    translationResult.appendChild(copyBtn);
+                    translationResult.appendChild(translationWrapper);
+                } else {
+                    throw new Error(result.detail || 'Translation failed');
+                }
             } catch (error) {
-                result.innerHTML = `<span class="error">❌ Error: ${error.message}</span>`;
-                console.error("Translation error:", error);
+                translationResult.innerHTML = `<span class="error">❌ Error: ${error.message}</span>`;
+                console.error('Translation error:', error);
             }
         }
 
@@ -525,21 +637,39 @@
         function highlightChanges(text, changes) {
             let highlightedText = text;
             
+            // Sort changes by position to handle overlapping changes
+            changes.sort((a, b) => {
+                const aPos = highlightedText.indexOf(a.old || a.new);
+                const bPos = highlightedText.indexOf(b.old || b.new);
+                return bPos - aPos;  // Process from end to start
+            });
+            
             changes.forEach(change => {
                 const { type, old, new: newText } = change;
                 
-                if (type === "punctuation") {
-                    highlightedText = highlightedText.replace(new RegExp(`\b${old}\b`, 'g'), `<span class="highlight-punctuation">${newText}</span>`);
+                if (type === "grammar") {
+                    highlightedText = highlightedText.replace(
+                        new RegExp(escapeRegExp(old), 'g'),
+                        `<span class="diff-grammar" title="Changed: ${old} → ${newText}">${newText}</span>`
+                    );
                 } else if (type === "added") {
-                    highlightedText = highlightedText.replace(new RegExp(`\b${newText}\b`, 'g'), `<span class="highlight-added">${newText}</span>`);
+                    highlightedText = highlightedText.replace(
+                        new RegExp(escapeRegExp(newText), 'g'),
+                        `<span class="diff-added-text" title="Added">${newText}</span>`
+                    );
                 } else if (type === "removed") {
-                    highlightedText = highlightedText.replace(new RegExp(`\b${old}\b`, 'g'), `<span class="highlight-removed">${old}</span>`);
-                } else if (type === "grammar") {
-                    highlightedText = highlightedText.replace(new RegExp(`\b${old}\b`, 'g'), `<span class="highlight-grammar">${newText}</span>`);
+                    highlightedText = highlightedText.replace(
+                        new RegExp(escapeRegExp(old), 'g'),
+                        `<span class="diff-removed-text" title="Removed">${old}</span>`
+                    );
                 }
             });
             
             return highlightedText;
+        }
+
+        function escapeRegExp(string) {
+            return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         }
 
         function showError(message) {
