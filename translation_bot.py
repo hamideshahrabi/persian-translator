@@ -747,73 +747,58 @@ def check_basic_completeness(text: str) -> bool:
 async def process_gemini_edit(text: str) -> str:
     """Process text editing using Gemini API."""
     try:
-        # Configure Gemini
-        genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
-        
-        # Try to use the specified model directly
-        try:
-            logger.info("Attempting to use gemini-1.5-flash-8b model")
-            model = genai.GenerativeModel("gemini-1.5-flash-8b")
+        logger.info("Starting Gemini edit process")
+        if not connection_pool._gemini_state.is_connected:
+            logger.error("Gemini API not connected")
+            raise Exception("Gemini API connection not available")
             
-            # Create a proper translation prompt
+        async with connection_pool.get_connection('gemini') as client:
+            logger.info("Got Gemini connection, preparing prompt")
             prompt = EDIT_PROMPT.format(text=text)
             
-            # Generate translation with retry logic
-            @backoff.on_exception(backoff.expo, Exception, max_tries=3)
-            def generate_with_retry():
-                return model.generate_content(prompt)
-            
-            loop = asyncio.get_event_loop()
-            response = await asyncio.wait_for(
-                loop.run_in_executor(None, generate_with_retry),
-                timeout=30.0
-            )
+            logger.info("Sending request to Gemini API")
+            response = await client.generate_content(prompt)
+            logger.info("Received response from Gemini API")
             
             if not response or not response.text:
-                raise ValueError("Empty response from Gemini API")
+                logger.error("Empty response from Gemini API")
+                raise Exception("Failed to get valid response from Gemini API")
                 
-            logger.info("Successfully generated translation")
-            return response.text
-            
-        except Exception as e:
-            logger.error(f"Failed to use gemini-1.5-flash-8b model: {str(e)}")
-            raise
+            return response.text.strip()
             
     except Exception as e:
-        logger.error(f"Gemini translation error: {str(e)}")
-        raise
+        logger.error(f"Gemini edit error: {str(e)}")
+        raise Exception(f"Gemini API error: {str(e)}")
 
 async def process_openai_edit(text: str, model: str = ModelType.GPT35.value) -> str:
     """Process text editing using OpenAI API."""
     try:
-        # Create a proper translation prompt
-        prompt = EDIT_PROMPT.format(text=text)
-        
-        # Generate translation with retry logic
-        @backoff.on_exception(backoff.expo, Exception, max_tries=3)
-        def generate_with_retry():
-            return openai_client.chat.completions.create(
+        logger.info(f"Starting OpenAI edit process with model: {model}")
+        if not connection_pool._openai_state.is_connected:
+            logger.error("OpenAI API not connected")
+            raise Exception("OpenAI API connection not available")
+            
+        async with connection_pool.get_connection('openai') as client:
+            logger.info("Got OpenAI connection, preparing prompt")
+            prompt = EDIT_PROMPT.format(text=text)
+            
+            logger.info("Sending request to OpenAI API")
+            response = await client.chat.completions.create(
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.7,
-                max_tokens=4000
+                temperature=0.7
             )
-        
-        loop = asyncio.get_event_loop()
-        response = await asyncio.wait_for(
-            loop.run_in_executor(None, generate_with_retry),
-            timeout=30.0
-        )
-        
-        if not response or not response.choices:
-            raise ValueError("Empty response from OpenAI API")
+            logger.info("Received response from OpenAI API")
             
-        logger.info("Successfully generated translation")
-        return response.choices[0].message.content
-        
+            if not response or not response.choices:
+                logger.error("Empty response from OpenAI API")
+                raise Exception("Failed to get valid response from OpenAI API")
+                
+            return response.choices[0].message.content.strip()
+            
     except Exception as e:
-        logger.error(f"OpenAI translation error: {str(e)}")
-        raise
+        logger.error(f"OpenAI edit error: {str(e)}")
+        raise Exception(f"OpenAI API error: {str(e)}")
 
 def format_text_for_editing(text: str) -> str:
     """Format text for editing by adding clear instructions."""
@@ -1058,78 +1043,35 @@ async def translate_text(request: Request):
         
         if model_type in [ModelType.GEMINI.value, ModelType.GEMINI2.value]:
             try:
-                # Configure Gemini
-                genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
-                
-                # Try to use the specified model directly
-                try:
-                    logger.info(f"Attempting to use {model_type} model")
-                    model = genai.GenerativeModel(model_type)
-                    
-                    # Create a proper translation prompt
+                async with get_api_connection('gemini') as client:
                     prompt = TRANSLATION_PROMPT.format(text=text)
-                    
-                    # Generate translation with retry logic
-                    @backoff.on_exception(backoff.expo, Exception, max_tries=3)
-                    def generate_with_retry():
-                        return model.generate_content(prompt)
-                    
-                    loop = asyncio.get_event_loop()
-                    response = await asyncio.wait_for(
-                        loop.run_in_executor(None, generate_with_retry),
-                        timeout=30.0
-                    )
-                    
-                    if not response or not response.text:
-                        raise ValueError("Empty response from Gemini API")
-                        
-                    logger.info("Successfully generated translation")
+                    response = await client.generate_content(prompt)
                     return {"translated_text": response.text}
-                    
-                except Exception as e:
-                    logger.error(f"Failed to use {model_type} model: {str(e)}")
-                    raise
-                    
-            except asyncio.TimeoutError:
-                raise HTTPException(status_code=408, detail="Gemini API timeout")
             except Exception as e:
                 logger.error(f"Gemini translation error: {str(e)}")
                 raise HTTPException(status_code=500, detail=str(e))
         else:
+            # Use OpenAI for translation
             try:
-                # Create a proper translation prompt
-                prompt = TRANSLATION_PROMPT.format(text=text)
-                
-                # Generate translation with retry logic
-                @backoff.on_exception(backoff.expo, Exception, max_tries=3)
-                def generate_with_retry():
-                    return openai_client.chat.completions.create(
+                async with get_api_connection('openai') as client:
+                    prompt = TRANSLATION_PROMPT.format(text=text)
+                    response = await client.chat.completions.create(
                         model=model_type,
                         messages=[{"role": "user", "content": prompt}],
-                        temperature=0.7,
-                        max_tokens=4000
+                        temperature=0.7
                     )
-                
-                loop = asyncio.get_event_loop()
-                response = await asyncio.wait_for(
-                    loop.run_in_executor(None, generate_with_retry),
-                    timeout=30.0
-                )
-                
-                if not response or not response.choices:
-                    raise ValueError("Empty response from OpenAI API")
-                    
-                logger.info("Successfully generated translation")
-                return {"translated_text": response.choices[0].message.content}
-                
+                    return {"translated_text": response.choices[0].message.content}
+            except openai.APIError as e:
+                logger.error(f"OpenAI API error: {str(e)}")
+                raise HTTPException(status_code=500, detail=str(e))
             except asyncio.TimeoutError:
                 raise HTTPException(status_code=408, detail="OpenAI API timeout")
             except Exception as e:
                 logger.error(f"OpenAI translation error: {str(e)}")
                 raise HTTPException(status_code=500, detail=str(e))
                 
-    except HTTPException:
-        raise
+    except HTTPException as e:
+        raise e
     except Exception as e:
         logger.error(f"Translation error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
