@@ -3,7 +3,7 @@ from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Union, Tuple
+from typing import List, Optional, Dict, Union, Tuple, Any
 import os
 from dotenv import load_dotenv
 import logging
@@ -19,126 +19,615 @@ from difflib import SequenceMatcher
 from html import escape
 from contextlib import asynccontextmanager
 import socket
+import httpx
+import aiohttp
+import backoff  # For exponential backoff
+from typing import Optional, Dict, Any
+import threading
+import time
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from improvements import TRANSLATION_PROMPT, EDIT_PROMPT, EDIT_PROMPT_DETAILED
 
 # Configure logging and load API keys
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-load_dotenv()
+# Load environment variables once at startup
+load_dotenv(override=True)  # Force reload of environment variables
+
+# Define editing stages and context
+PUBLISHING_CONTEXT = """شما یک ویراستار متون فارسی در یک انتشارات حرفه‌ای هستید. هدف شما بهبود کیفیت متن با حفظ معنی و محتوای اصلی است."""
+
+EDIT_STAGES = {
+    'grammar': {
+        'name': 'اصلاح دستور زبان و نگارش',
+        'focus': [
+            'اصلاح خطاهای دستوری',
+            'بهبود نقطه‌گذاری',
+            'اصلاح فاصله‌گذاری'
+        ],
+        'examples': 'مثال: تبدیل "من رفتم خانه." به "من به خانه رفتم."'
+    },
+    'clarity': {
+        'name': 'بهبود وضوح و روانی',
+        'focus': [
+            'بهبود ساختار جملات',
+            'حذف ابهام',
+            'افزایش روانی متن'
+        ],
+        'examples': 'مثال: ساده‌سازی جملات پیچیده با حفظ معنی'
+    },
+    'professional': {
+        'name': 'استانداردسازی حرفه‌ای',
+        'focus': [
+            'یکدست‌سازی اصطلاحات',
+            'حفظ لحن حرفه‌ای',
+            'بهبود انسجام متن'
+        ],
+        'examples': 'مثال: استفاده از اصطلاحات استاندارد حرفه‌ای'
+    }
+}
+
+# Global variables for API clients and keys
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-
-# Initialize global API clients
 openai_client = None
-try:
-    openai_client = openai.AsyncOpenAI(
-        api_key=OPENAI_API_KEY,
-        timeout=30.0,
-        max_retries=3
-    )
-except Exception as e:
-    logger.error(f"Failed to initialize OpenAI client: {str(e)}")
-    raise
+genai_initialized = False
 
-# Validate API keys
-if not OPENAI_API_KEY:
-    logger.error("OpenAI API key not found")
-    raise ValueError("OpenAI API key is required")
+@dataclass
+class ConnectionState:
+    is_connected: bool = False
+    last_check: datetime = datetime.min
+    error_count: int = 0
+    last_error: Optional[str] = None
+    retry_after: Optional[datetime] = None
 
-if not GEMINI_API_KEY:
-    logger.error("Gemini API key not found")
-    raise ValueError("Gemini API key is required")
+class ConnectionPool:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._openai_state = ConnectionState()
+        self._gemini_state = ConnectionState()
+        self._env_loaded = False
+        self._check_interval = timedelta(seconds=30)
+        self._max_retries = 3
+        self._retry_delay = 2  # seconds
+        self._backoff_factor = 2  # exponential backoff factor
+        self._openai_client = None
+        self._gemini_model = None
+        self._initialized = False
+        self._last_error = None
+        self._error_count = 0
+        self._connection_timeout = 10.0  # seconds
+        
+    def _load_environment(self) -> bool:
+        """Load environment variables with validation"""
+        with self._lock:
+            if self._env_loaded:
+                return True
+                
+            try:
+                # Force reload environment variables
+                load_dotenv(override=True)
+                
+                # Validate required variables
+                required_vars = ['OPENAI_API_KEY', 'GEMINI_API_KEY']
+                missing_vars = [var for var in required_vars if not os.getenv(var)]
+                
+                if missing_vars:
+                    error_msg = f"Missing required environment variables: {', '.join(missing_vars)}"
+                    logger.error(error_msg)
+                    self._last_error = error_msg
+                    return False
+                    
+                # Validate API key formats
+                openai_key = os.getenv('OPENAI_API_KEY')
+                if not openai_key.startswith('sk-'):
+                    error_msg = "OpenAI API key format appears incorrect. Expected to start with 'sk-'"
+                    logger.error(error_msg)
+                    self._last_error = error_msg
+                    return False
+                    
+                gemini_key = os.getenv('GEMINI_API_KEY')
+                if not gemini_key.startswith('AIza'):
+                    error_msg = "Gemini API key format appears incorrect. Expected to start with 'AIza'"
+                    logger.error(error_msg)
+                    self._last_error = error_msg
+                    return False
+                    
+                self._env_loaded = True
+                self._last_error = None
+                return True
+            except Exception as e:
+                error_msg = f"Failed to load environment: {str(e)}"
+                logger.error(error_msg)
+                self._last_error = error_msg
+                return False
+                
+    async def _check_openai_connection(self) -> bool:
+        """Check OpenAI connection health"""
+        try:
+            api_key = os.getenv('OPENAI_API_KEY')
+            if not api_key:
+                error_msg = "OpenAI API key not found"
+                logger.error(error_msg)
+                self._last_error = error_msg
+                return False
+                
+            logger.info(f"Attempting to initialize OpenAI client with API key (masked): {api_key[:8]}...")
+            
+            if not self._openai_client:
+                self._openai_client = openai.AsyncOpenAI(
+                    api_key=api_key,
+                    timeout=self._connection_timeout
+                )
+            
+            logger.info("Making test request to OpenAI API...")
+            try:
+                response = await self._openai_client.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[{"role": "user", "content": "test"}],
+                    max_tokens=5
+                )
+                
+                if response and response.choices:
+                    logger.info("OpenAI test request successful")
+                    self._last_error = None
+                    return True
+                else:
+                    error_msg = "OpenAI API returned empty response"
+                    logger.error(error_msg)
+                    self._last_error = error_msg
+                    return False
+                    
+            except openai.AuthenticationError as e:
+                error_msg = f"OpenAI authentication failed: {str(e)}"
+                logger.error(error_msg)
+                self._last_error = error_msg
+                return False
+            except openai.RateLimitError as e:
+                error_msg = f"OpenAI rate limit exceeded: {str(e)}"
+                logger.error(error_msg)
+                self._last_error = error_msg
+                return False
+            except openai.APIError as e:
+                error_msg = f"OpenAI API error: {str(e)}"
+                logger.error(error_msg)
+                self._last_error = error_msg
+                return False
+                
+        except Exception as e:
+            error_msg = f"OpenAI connection check failed: {str(e)}"
+            logger.error(error_msg)
+            self._last_error = error_msg
+            return False
+            
+    async def _check_gemini_connection(self) -> bool:
+        """Check if Gemini API is accessible and working."""
+        try:
+            # Get and validate API key
+            api_key = os.getenv('GEMINI_API_KEY')
+            if not api_key:
+                error_msg = "Gemini API key not found in environment variables"
+                logger.error(error_msg)
+                self._last_error = error_msg
+                return False
+            
+            # Configure Gemini client
+            logger.info(f"Configuring Gemini with API key (masked): {api_key[:8]}...")
+            genai.configure(api_key=api_key)
+            
+            # Try to list available models first
+            try:
+                logger.info("Attempting to list available models")
+                models = genai.list_models()
+                
+                if not models:
+                    error_msg = "No models returned from Gemini API"
+                    logger.error(error_msg)
+                    self._last_error = error_msg
+                    return False
+                    
+                logger.info("Available models:")
+                for m in models:
+                    logger.info(f"Model: {m.name}")
+                    logger.info(f"Generation methods: {m.supported_generation_methods}")
+                    
+                    # Try to use each model that supports text generation
+                    if 'generateContent' in m.supported_generation_methods:
+                        try:
+                            logger.info(f"Attempting to use model: {m.name}")
+                            model = genai.GenerativeModel(m.name)
+                            response = model.generate_content("Test")
+                            if response and response.text:
+                                logger.info(f"Successfully connected to Gemini API using model: {m.name}")
+                                self._gemini_model = model
+                                self._last_error = None
+                                return True
+                        except Exception as model_error:
+                            logger.error(f"Failed to use model {m.name}: {str(model_error)}")
+                            continue
+                
+                error_msg = "No suitable Gemini model found"
+                logger.error(error_msg)
+                self._last_error = error_msg
+                return False
+                
+            except Exception as list_error:
+                error_msg = f"Failed to list models: {str(list_error)}"
+                logger.error(error_msg)
+                self._last_error = error_msg
+                return False
+                
+        except Exception as e:
+            error_msg = f"Gemini connection failed: {str(e)}"
+            logger.error(error_msg)
+            if "PERMISSION_DENIED" in str(e):
+                error_msg = "This might be due to an invalid API key or insufficient permissions"
+            elif "NOT_FOUND" in str(e):
+                error_msg = "The specified model was not found. Please check the model name"
+            elif "API key not valid" in str(e):
+                error_msg = "The API key appears to be invalid. Please check your API key"
+            elif "quota" in str(e).lower():
+                error_msg = "API quota exceeded or billing not enabled"
+            else:
+                error_msg = f"Unexpected error: {str(e)}"
+            self._last_error = error_msg
+            return False
+            
+    async def _wait_for_retry(self, state: ConnectionState) -> bool:
+        """Check if we should wait before retrying"""
+        if state.retry_after and datetime.now() < state.retry_after:
+            wait_time = (state.retry_after - datetime.now()).total_seconds()
+            if wait_time > 0:
+                logger.info(f"Waiting {wait_time:.1f} seconds before retry...")
+                await asyncio.sleep(wait_time)
+            return True
+        return False
+        
+    async def _handle_error(self, state: ConnectionState, error: Exception):
+        """Handle connection errors with exponential backoff"""
+        state.error_count += 1
+        state.last_error = str(error)
+        
+        # Calculate next retry time with exponential backoff
+        delay = self._retry_delay * (self._backoff_factor ** (state.error_count - 1))
+        state.retry_after = datetime.now() + timedelta(seconds=delay)
+        
+        logger.warning(f"Connection error occurred. Will retry in {delay:.1f} seconds. Error: {str(error)}")
+        
+        # Reset error count after a while to prevent infinite backoff
+        if state.error_count > 10:
+            state.error_count = 0
+            logger.info("Reset error count after max retries")
+            
+    async def ensure_connections(self) -> bool:
+        """Ensure all connections are healthy with proper error handling"""
+        if not self._load_environment():
+            return False
+            
+        now = datetime.now()
+        success = True
+        
+        # Check OpenAI connection if needed
+        if (now - self._openai_state.last_check) > self._check_interval:
+            with self._lock:
+                if await self._wait_for_retry(self._openai_state):
+                    return False
+                    
+                try:
+                    self._openai_state.is_connected = await self._check_openai_connection()
+                    if self._openai_state.is_connected:
+                        self._openai_state.error_count = 0
+                        self._openai_state.last_error = None
+                    self._openai_state.last_check = now
+                except Exception as e:
+                    await self._handle_error(self._openai_state, e)
+                    success = False
+                    
+        # Check Gemini connection if needed
+        if (now - self._gemini_state.last_check) > self._check_interval:
+            with self._lock:
+                if await self._wait_for_retry(self._gemini_state):
+                    return False
+                    
+                try:
+                    self._gemini_state.is_connected = await self._check_gemini_connection()
+                    if self._gemini_state.is_connected:
+                        self._gemini_state.error_count = 0
+                        self._gemini_state.last_error = None
+                    self._gemini_state.last_check = now
+                except Exception as e:
+                    await self._handle_error(self._gemini_state, e)
+                    success = False
+                    
+        return success
+        
+    def get_connection(self, service: str) -> Any:
+        """Get a connection from the pool"""
+        try:
+            if service == "openai":
+                return self._openai_client
+            elif service == "gemini":
+                return self._gemini_model
+            else:
+                raise ValueError(f"Unknown service: {service}")
+        except Exception as e:
+            logger.error(f"Failed to get connection for {service}: {str(e)}")
+            raise
+            
+    async def close_all(self):
+        """Close all connections"""
+        try:
+            # Close OpenAI connection if active
+            if self._openai_client:
+                await self._openai_client.close()
+                self._openai_client = None
+                self._openai_state = ConnectionState()
+                
+            # Reset Gemini state
+            self._gemini_model = None
+            self._gemini_state = ConnectionState()
+            
+            logger.info("All connections closed successfully")
+        except Exception as e:
+            logger.error(f"Error closing connections: {str(e)}")
+            raise
 
-# Updated prompt for more aggressive editing
-EDIT_PROMPT_PERSIAN = """لطفاً متن فارسی زیر را با دقت بالا و با رعایت تمام نکات زیر ویرایش نمایید:
+# Create global connection pool
+connection_pool = ConnectionPool()
 
-اصول اساسی ویرایش:
-۱. بررسی دقیق گرامر و نحو:
-   - اطمینان از صحت ساختار تمام جملات
-   - بررسی تطابق فعل و فاعل
-   - استفاده صحیح از حروف ربط و اضافه
-   - رعایت زمان افعال و هماهنگی آنها
+@asynccontextmanager
+async def get_api_connection(service: str):
+    """Context manager for API connections"""
+    try:
+        # Get connection from pool
+        connection = connection_pool.get_connection(service)
+        
+        # For OpenAI, we need to ensure the connection is properly initialized
+        if service == 'openai':
+            if not connection:
+                connection = openai.AsyncOpenAI(
+                    api_key=os.getenv('OPENAI_API_KEY'),
+                    timeout=30.0,
+                    max_retries=2
+                )
+                connection_pool._openai_client = connection
+            
+            # Test the connection
+            try:
+                await connection.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[{"role": "user", "content": "test"}],
+                    max_tokens=5
+                )
+            except Exception as e:
+                logger.warning(f"OpenAI connection test failed, reinitializing: {str(e)}")
+                connection = openai.AsyncOpenAI(
+                    api_key=os.getenv('OPENAI_API_KEY'),
+                    timeout=30.0,
+                    max_retries=2
+                )
+                connection_pool._openai_client = connection
+            
+        # For Gemini, we need to ensure the model is properly initialized
+        elif service == 'gemini':
+            if not connection:
+                # Configure Gemini with API key
+                api_key = os.getenv('GEMINI_API_KEY')
+                if not api_key:
+                    raise ValueError("Gemini API key not found")
+                    
+                genai.configure(api_key=api_key)
+                
+                # Try to use gemini-1.5-flash-8b model directly
+                try:
+                    logger.info("Attempting to use gemini-1.5-flash-8b model")
+                    connection = genai.GenerativeModel('gemini-1.5-flash-8b')
+                    # Test the model
+                    response = connection.generate_content("Test message")
+                    if response and response.text:
+                        logger.info("Successfully initialized gemini-1.5-flash-8b model")
+                        connection_pool._gemini_model = connection
+                    else:
+                        raise ValueError("gemini-1.5-flash-8b model returned empty response")
+                except Exception as e:
+                    logger.warning(f"Failed to use gemini-1.5-flash-8b model: {str(e)}")
+                    
+                    # Fallback: try to list available models
+                    try:
+                        logger.info("Attempting to list available models")
+                        models = genai.list_models()
+                        
+                        if not models:
+                            raise ValueError("No models returned from Gemini API")
+                            
+                        logger.info("Available models:")
+                        for m in models:
+                            logger.info(f"Model: {m.name}")
+                            logger.info(f"Generation methods: {m.supported_generation_methods}")
+                            
+                            # Try to use each model that supports text generation
+                            if 'generateContent' in m.supported_generation_methods:
+                                try:
+                                    logger.info(f"Attempting to use model: {m.name}")
+                                    model = genai.GenerativeModel(m.name)
+                                    response = model.generate_content("Test")
+                                    if response and response.text:
+                                        logger.info(f"Successfully connected to Gemini API using model: {m.name}")
+                                        connection_pool._gemini_model = model
+                                        connection = model  # Update the connection variable
+                                        break
+                                except Exception as model_error:
+                                    logger.error(f"Failed to use model {m.name}: {str(model_error)}")
+                                    continue
+                        
+                        if not connection:
+                            raise ValueError("No suitable Gemini model found")
+                        
+                    except Exception as list_error:
+                        logger.error(f"Failed to list models: {str(list_error)}")
+                        raise
+                    
+        yield connection
+        
+    except Exception as e:
+        logger.error(f"Error getting connection for {service}: {str(e)}")
+        raise
+    finally:
+        # Only close OpenAI connections
+        if service == 'openai' and connection:
+            await connection.close()
 
-۲. ارتقای سطح واژگان:
-   - جایگزینی واژگان عامیانه با معادل‌های رسمی و تخصصی
-   - استفاده از واژگان دقیق و تخصصی حوزه مربیگری
-   - حذف کلمات زائد و تکراری
-   - انتخاب واژگان متناسب با سطح آکادمیک
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan manager"""
+    try:
+        # Initialize connections
+        if not await connection_pool.ensure_connections():
+            raise RuntimeError("Failed to establish initial connections")
+        logger.info("All connections initialized successfully")
+        yield
+    finally:
+        await connection_pool.close_all()
 
-۳. ساختار متن:
-   - هر پاراگراف باید شامل جملات کامل باشد
-   - تنها عناوین می‌توانند تک‌کلمه یا عبارت باشند
-   - تمام توضیحات باید در قالب جملات کامل ارائه شوند
-   - رعایت پیوستگی و انسجام بین جملات
+# Setup API with lifespan
+app = FastAPI(lifespan=lifespan)
 
-۴. سطح رسمی و حرفه‌ای:
-   - حفظ لحن کاملاً رسمی و آکادمیک
-   - استفاده از ساختارهای نگارشی استاندارد
-   - رعایت اصول نگارش علمی
-   - حذف هرگونه عبارت غیررسمی یا محاوره‌ای
+# Setup templates
+templates = Jinja2Templates(directory="templates")
 
-۵. دقت در محتوا:
-   - حفظ دقیق معنا و مفهوم اصلی متن
-   - تقویت وضوح و شفافیت پیام
-   - اطمینان از انتقال صحیح مفاهیم تخصصی
-   - حفظ تمام نکات کلیدی متن اصلی
+# Mount static files
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
-قوانین سخت‌گیرانه:
-- هر بخش متن (به جز عناوین) باید شامل جملات کامل باشد
-- هیچ کلمه یا عبارت منفردی نباید بدون ساختار جمله باقی بماند
-- تمام جملات باید از نظر گرامری کاملاً صحیح باشند
-- هر تغییر در واژگان باید منجر به ارتقای سطح متن شود
-- حفظ معنای دقیق متن اصلی الزامی است
-
-لطفاً متن را با رعایت تمام این نکات ویرایش نمایید."""
-
-# Initialize API clients and test connections
+# Update the test_api_connections function to use the connection manager
 async def test_api_connections():
+    """Test API connections with detailed logging and automatic retries."""
     openai_status = "Not tested"
     gemini_status = "Not tested"
+    gemini2_status = "Not tested"
     
+    # Test OpenAI with retries
     try:
-        # Test OpenAI connection
-        response = await openai_client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": "Test"}],
-            max_tokens=5
-        )
-        if response:
-            logger.info("✅ Successfully tested OpenAI API connection")
-            openai_status = "✅ Connected"
+        async with get_api_connection('openai') as openai_client:
+            response = await openai_client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": "Test"}],
+                max_tokens=5
+            )
+            if response:
+                logger.info("✅ Successfully tested GPT-3.5 connection")
+                try:
+                    if OPENAI_API_KEY.startswith("sk-org-"):
+                        response = await openai_client.chat.completions.create(
+                            model="gpt-4",
+                            messages=[{"role": "user", "content": "Test"}],
+                            max_tokens=5
+                        )
+                        openai_status = "✅ Connected (GPT-3.5 & GPT-4)"
+                    else:
+                        openai_status = "✅ Connected (GPT-3.5 only, GPT-4 requires Organization API key)"
+                except Exception as e:
+                    openai_status = "✅ Connected (GPT-3.5 only)"
+            else:
+                openai_status = "❌ Empty response"
     except Exception as e:
-        logger.error(f"❌ Failed to initialize OpenAI client: {str(e)}")
+        logger.error(f"❌ OpenAI connection error: {str(e)}")
         openai_status = f"❌ Error: {str(e)}"
     
+    # Test Gemini with retries
     try:
-        # Initialize Gemini client
-        genai.configure(api_key=GEMINI_API_KEY)
+        # Configure Gemini
+        api_key = os.getenv('GEMINI_API_KEY')
+        if not api_key:
+            raise ValueError("Gemini API key not found")
+            
+        genai.configure(api_key=api_key)
         
-        # List available models
-        logger.info("Available Gemini models:")
-        for m in genai.list_models():
-            logger.info(f"- {m.name}")
-        
-        # Test Gemini connection
-        model = genai.GenerativeModel('models/gemini-1.5-pro')
-        response = model.generate_content("Test")
-        if response:
-            logger.info("✅ Successfully tested Gemini model connection")
-            gemini_status = "✅ Connected"
-        else:
-            logger.error("❌ Gemini model returned empty response")
-            gemini_status = "❌ Error: Empty response"
+        # First try to use gemini-1.5-flash-8b model directly
+        try:
+            logger.info("Attempting to use gemini-1.5-flash-8b model")
+            model = genai.GenerativeModel('gemini-1.5-flash-8b')
+            response = model.generate_content("Test")
+            if response and response.text:
+                gemini_status = "✅ Connected"
+                logger.info("Successfully connected to gemini-1.5-flash-8b model")
+            else:
+                raise ValueError("Empty response from gemini-1.5-flash-8b model")
+        except Exception as e:
+            logger.warning(f"Failed to use gemini-1.5-flash-8b model: {str(e)}")
+            
+            # Fallback: try to list available models
+            logger.info("Attempting to list available models")
+            models = genai.list_models()
+            
+            if not models:
+                raise ValueError("No models returned from Gemini API")
+                
+            logger.info("Available Gemini models:")
+            for m in models:
+                logger.info(f"Model: {m.name}")
+                logger.info(f"Generation methods: {m.supported_generation_methods}")
+                logger.info(f"Display name: {m.display_name}")
+                logger.info(f"Description: {m.description}")
+                logger.info("---")
+            
+            # Try to find a suitable model
+            for m in models:
+                if "generateContent" in m.supported_generation_methods:
+                    try:
+                        model = genai.GenerativeModel(m.name)
+                        response = model.generate_content("Test")
+                        if response and response.text:
+                            gemini_status = f"✅ Connected (using {m.name})"
+                            logger.info(f"Successfully connected to model: {m.name}")
+                            break
+                    except Exception as e:
+                        logger.warning(f"Failed to initialize model {m.name}: {str(e)}")
+                        continue
+            
+            if gemini_status == "Not tested":
+                gemini_status = "❌ No suitable Gemini model found"
+                
+        except Exception as e:
+            logger.error(f"❌ Gemini connection error: {str(e)}")
+            gemini_status = f"❌ Error: {str(e)}"
+            
     except Exception as e:
-        logger.error(f"❌ Failed to initialize Gemini client: {str(e)}")
+        logger.error(f"❌ Gemini connection error: {str(e)}")
         gemini_status = f"❌ Error: {str(e)}"
-    
-    return openai_status, gemini_status
+        gemini2_status = f"❌ Error: {str(e)}"
+
+    return openai_status, gemini_status, gemini2_status
 
 class ModelType(str, Enum):
     GPT35 = "gpt-3.5-turbo"
-    GPT4 = "gpt-4-turbo-preview"
-    GEMINI = "models/gemini-1.5-pro"
+    GPT4 = "gpt-4"
+    GEMINI = "gemini-1.5-flash-8b"
+    GEMINI2 = "gemini-1.5-pro"
+    
+    @property
+    def description(self) -> str:
+        descriptions = {
+            self.GPT35: "Fast and reliable processing with good accuracy",
+            self.GPT4: "Most accurate processing, better understanding of context and nuances",
+            self.GEMINI: "Gemini 1.5 Flash - Fast and efficient model for text processing",
+            self.GEMINI2: "Gemini 1.5 Pro - Advanced model with better understanding"
+        }
+        return descriptions.get(self, "Unknown model")
+        
+    @property
+    def max_tokens(self) -> int:
+        limits = {
+            self.GPT35: 30000,
+            self.GPT4: 50000,
+            self.GEMINI: 1_000_000,
+            self.GEMINI2: 2000000
+        }
+        return limits.get(self, 30000)  # Default to 30000 if unknown
 
 class EditRequest(BaseModel):
     text: str
@@ -156,48 +645,60 @@ class EditResponse(BaseModel):
     diff_html: str
 
 class StatusResponse(BaseModel):
-    openai_status: str
-    gemini_status: str
-    server_status: str = "✅ Running"
+    status: str
+    services: Dict[str, Dict[str, Optional[Union[str, bool]]]]
+    message: str
 
 def verify_text(edited_text: str, original_text: str) -> bool:
-    """Very lenient verification that edited text meets minimum quality standards."""
+    """Strict verification that edited text meets professional quality standards."""
     if not edited_text or not original_text:
         return False
         
     # Extract quotes from both texts
-    quote_pattern = r'"[^"]+"|«[^»]+»|"[^"]+"|\[[^\]]+\]'  # Added support for bracketed text
+    quote_pattern = r'"[^"]+"|«[^»]+»|"[^"]+"|\[[^\]]+\]'
     original_quotes = set(re.findall(quote_pattern, original_text))
     edited_quotes = set(re.findall(quote_pattern, edited_text))
     
-    # Very lenient quote preservation check - only check if there are quotes
-    if original_quotes and len(original_quotes) > len(edited_quotes) * 0.3:  # Allow 70% of quotes to be modified
+    # Stricter quote preservation - only allow 10% modification
+    if original_quotes and len(edited_quotes) < len(original_quotes) * 0.9:
         logger.warning(f"Quote preservation ratio too low: {len(edited_quotes)}/{len(original_quotes)}")
         return False
     
-    # Check for incomplete sentences (excluding titles and short phrases)
+    # Check all sentences for proper punctuation
     lines = edited_text.split('\n')
     for line in lines:
         line = line.strip()
         if not line:
             continue
             
-        # Skip titles, short lines, and special markers
-        if len(line.split()) <= 7 or line.startswith('[') or line.endswith(']'):
+        # Skip only titles and special markers
+        if line.startswith('[') or line.endswith(']'):
             continue
             
         # Skip lines that are just quotes
         if re.match(quote_pattern, line):
             continue
             
-        # Very lenient punctuation check - only for long lines
-        if len(line.split()) > 15 and not any(line.endswith(p) for p in ['.', '!', '?', '؟', '۔', ':', '؛', '،', '-']):
-            logger.warning(f"Long line missing punctuation: {line}")
+        # Check punctuation for all sentences
+        if not any(line.endswith(p) for p in ['.', '!', '?', '؟', '۔', ':', '؛', '،', '-']):
+            logger.warning(f"Sentence missing punctuation: {line}")
             return False
+            
+        # Additional professional content checks
+        if len(line.split()) > 0:  # Check all non-empty lines
+            # Check for proper spacing around punctuation
+            if re.search(r'[.!?؟۔؛،][^\s]', line):
+                logger.warning(f"Missing space after punctuation: {line}")
+                return False
+                
+            # Check for professional formatting
+            if re.search(r'\s{2,}', line):  # Multiple spaces
+                logger.warning(f"Multiple spaces found: {line}")
+                return False
     
     return True
 
-def check_content_preserved(original_text: str, edited_text: str, threshold: float = 0.2) -> bool:
+def check_content_preserved(original_text: str, edited_text: str, threshold: float = 0.5) -> bool:
     """Check if the edited text preserves core meaning while allowing substantial reformulation."""
     def clean_text(text: str) -> str:
         # Basic cleaning while preserving word boundaries
@@ -219,15 +720,15 @@ def check_content_preserved(original_text: str, edited_text: str, threshold: flo
     original_words = set(w for s in original_sentences for w in s.split() if len(w) > 2)  # Only check words longer than 2 chars
     edited_words = set(w for s in edited_sentences for w in s.split() if len(w) > 2)
     
-    # Calculate word preservation ratio with lower threshold
+    # Calculate word preservation ratio with higher threshold
     preserved_words = len(original_words.intersection(edited_words))
     word_preservation_ratio = preserved_words / len(original_words) if original_words else 1.0
     
-    # More lenient sentence count ratio
+    # More strict sentence count ratio
     sentence_ratio = len(edited_sentences) / len(original_sentences) if original_sentences else 1.0
     
-    # Very lenient thresholds
-    return word_preservation_ratio >= threshold and 0.3 <= sentence_ratio <= 1.7
+    # Stricter thresholds
+    return word_preservation_ratio >= threshold and 0.7 <= sentence_ratio <= 1.3
 
 def check_basic_completeness(text: str) -> bool:
     """Perform a basic check for text completeness."""
@@ -244,331 +745,109 @@ def check_basic_completeness(text: str) -> bool:
     return complete_sentences > 0  # At least one complete sentence
 
 async def process_gemini_edit(text: str) -> str:
-    """Process text editing using Gemini API with strict grammar and sentence completion."""
-    if not text.strip():
-        raise ValueError("Empty text provided")
-
-    if len(text) > 60000:
-        raise ValueError("Text too long for Gemini API (max 60000 characters)")
-
-    # Pre-process text to identify titles, incomplete sentences and words
-    def format_text_for_editing(text: str) -> str:
-        # First identify titles (lines without ending punctuation that are followed by a blank line)
-        lines = text.split('\n')
-        formatted_lines = []
-        i = 0
-        while i < len(lines):
-            line = lines[i].strip()
-            if line:
-                # Check if this line could be a title
-                is_title = False
-                if not any(line.endswith(p) for p in ['.', '!', '?', '؟', '۔']):
-                    # Look ahead for blank line
-                    if i + 1 < len(lines) and not lines[i + 1].strip():
-                        is_title = True
-                
-                if is_title:
-                    formatted_lines.append(f"[عنوان]: {line}")
-                else:
-                    # Handle regular sentences
-                    if any(word.endswith('‌') for word in line.split()):
-                        formatted_lines.append(f"[نیاز به تکمیل کلمات]: {line}")
-                    elif not any(line.endswith(p) for p in ['.', '!', '?', '؟', '۔']):
-                        formatted_lines.append(f"[نیاز به تکمیل جمله]: {line}")
-                    else:
-                        formatted_lines.append(line)
-            else:
-                formatted_lines.append(line)  # Keep blank lines
-            i += 1
-        return '\n'.join(formatted_lines)
-
-    formatted_text = format_text_for_editing(text)
-    
-    max_retries = 3
-    last_error = None
-    
-    for attempt in range(max_retries):
+    """Process text editing using Gemini API."""
+    try:
+        # Configure Gemini
+        genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
+        
+        # Try to use the specified model directly
         try:
-            prompt = f"""لطفاً متن زیر را با دقت ویرایش کنید. به موارد زیر توجه ویژه نمایید:
-
-۱. تشخیص و حفظ عنوان‌ها:
-   - خطوط با علامت [عنوان] باید به عنوان عنوان حفظ شوند
-   - عنوان‌ها نیازی به نقطه در پایان ندارند
-   - فرمت و ساختار عنوان‌ها باید حفظ شود
-
-۲. تکمیل کلمات و جملات:
-   - عبارات با علامت [نیاز به تکمیل کلمات] دارای کلمات ناقص هستند که باید تکمیل شوند
-   - عبارات با علامت [نیاز به تکمیل جمله] باید به جملات کامل تبدیل شوند
-   - هر جمله (به جز عنوان‌ها) باید معنای کامل و مستقل داشته باشد
-
-۳. حفظ محتوا:
-   - هیچ جمله‌ای نباید حذف شود مگر با جایگزین مناسب
-   - تمام مفاهیم اصلی باید در متن نهایی وجود داشته باشند
-   - هر جمله اصلی باید حداقل یک معادل در متن ویرایش شده داشته باشد
-
-۴. بهبود کیفیت:
-   - استفاده از واژگان تخصصی و رسمی
-   - اصلاح ساختار جملات
-   - حفظ انسجام متن
-
-متن اصلی برای ویرایش:
-{formatted_text}
-
-لطفاً متن را طوری ویرایش کنید که:
-۱. عنوان‌ها به درستی شناسایی و حفظ شوند
-۲. تمام کلمات ناقص تکمیل شوند
-۳. هر جمله (به جز عنوان‌ها) کامل و معنادار باشد
-۴. هیچ محتوایی بدون جایگزین حذف نشود
-۵. سطح نگارش و واژگان ارتقا یابد"""
-
-            logger.info(f"Attempting Gemini API call (attempt {attempt + 1}/{max_retries})")
+            logger.info("Attempting to use gemini-1.5-flash-8b model")
+            model = genai.GenerativeModel("gemini-1.5-flash-8b")
             
-            edit_model = genai.GenerativeModel(
-                model_name='models/gemini-1.5-pro',
-                generation_config={
-                    'temperature': 0.5,
-                    'top_p': 0.9,
-                    'top_k': 30,
-                    'max_output_tokens': 8192,
-                }
-            )
+            # Create a proper translation prompt
+            prompt = EDIT_PROMPT.format(text=text)
             
+            # Generate translation with retry logic
+            @backoff.on_exception(backoff.expo, Exception, max_tries=3)
+            def generate_with_retry():
+                return model.generate_content(prompt)
+            
+            loop = asyncio.get_event_loop()
             response = await asyncio.wait_for(
-                asyncio.to_thread(lambda: edit_model.generate_content(prompt)),
+                loop.run_in_executor(None, generate_with_retry),
                 timeout=30.0
             )
             
             if not response or not response.text:
-                last_error = ValueError("Empty response from Gemini")
-                if attempt == max_retries - 1:
-                    raise last_error
-                await asyncio.sleep(1)
-                continue
+                raise ValueError("Empty response from Gemini API")
                 
-            edited_text = response.text.strip()
+            logger.info("Successfully generated translation")
+            return response.text
             
-            # Verify no incomplete words in non-title lines
-            lines = edited_text.split('\n')
-            for line in lines:
-                if line.strip() and not line.startswith('[عنوان]'):
-                    if any(word.endswith('‌') for word in line.split()):
-                        last_error = ValueError("Some words are still incomplete")
-                        if attempt == max_retries - 1:
-                            raise last_error
-                        await asyncio.sleep(1)
-                        continue
-            
-            # Check content preservation with lower threshold
-            if not check_content_preserved(text, edited_text, threshold=0.2):
-                last_error = ValueError("Failed to preserve content")
-                if attempt == max_retries - 1:
-                    raise last_error
-                await asyncio.sleep(1)
-                continue
-            
-            logger.info("Successfully processed text with Gemini")
-            return edited_text
-
-        except asyncio.TimeoutError:
-            last_error = TimeoutError("Gemini API timeout")
-            if attempt == max_retries - 1:
-                raise last_error
-            await asyncio.sleep(2)
         except Exception as e:
-            last_error = e
-            logger.error(f"Gemini API error (attempt {attempt + 1}): {str(e)}")
-            if attempt == max_retries - 1:
-                raise
-            await asyncio.sleep(2)
-    
-    raise last_error
-
-def preserve_quotes(original_text: str, edited_text: str) -> str:
-    """Preserve quotes from original text in edited text."""
-    # Extract quotes from original text
-    quote_pattern = r'"[^"]+"|«[^»]+»|"[^"]+"'
-    original_quotes = re.findall(quote_pattern, original_text)
-    edited_quotes = re.findall(quote_pattern, edited_text)
-    
-    # If edited text has fewer quotes, try to preserve original ones
-    if len(edited_quotes) < len(original_quotes):
-        for orig_quote in original_quotes:
-            if orig_quote not in edited_text:
-                # Find a suitable position to insert the quote
-                sentences = re.split(r'([.!?؟۔])', edited_text)
-                for i, sentence in enumerate(sentences):
-                    if any(word in sentence for word in orig_quote.split()):
-                        sentences[i] = f"{sentence} {orig_quote}"
-                        break
-                edited_text = ''.join(sentences)
-    
-    return edited_text
-
-@lru_cache(maxsize=1000)
-def detect_changes(original_text: str, edited_text: str) -> List[Change]:
-    """Detect changes between original and edited text with caching."""
-    changes = []
-    
-    if original_text == edited_text:
-        return changes
-    
-    matcher = difflib.SequenceMatcher(None, original_text, edited_text)
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        if tag == 'replace':
-            changes.append(Change(type="grammar", old=original_text[i1:i2], new=edited_text[j1:j2]))
-        elif tag == 'delete':
-            changes.append(Change(type="removed", old=original_text[i1:i2]))
-        elif tag == 'insert':
-            changes.append(Change(type="added", new=edited_text[j1:j2]))
-    
-    return changes
-
-def generate_diff_html(text: str, edited_text: str) -> str:
-    """Generate HTML diff between original and edited text."""
-    diff_html = []
-    matcher = SequenceMatcher(None, text, edited_text)
-    
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        if tag == 'equal':
-            diff_html.append(text[i1:i2])
-        elif tag in ('delete', 'replace'):
-            diff_html.append(f'<span class="diff-removed-text">{text[i1:i2]}</span>')
-        if tag in ('insert', 'replace'):
-            diff_html.append(f'<span class="diff-added-text">{edited_text[j1:j2]}</span>')
-    
-    return ''.join(diff_html)
-
-async def process_openai_edit(text: str, model: str = "gpt-3.5-turbo") -> str:
-    """Process text editing using OpenAI API with minimal changes."""
-    if not text.strip():
-        raise ValueError("Empty text provided")
+            logger.error(f"Failed to use gemini-1.5-flash-8b model: {str(e)}")
+            raise
             
-    if len(text) > 50000:
-        raise ValueError("Text too long for OpenAI API (max 50000 characters)")
-
-    # Pre-process text to identify quotes and special sections
-    def format_text_for_editing(text: str) -> str:
-        lines = text.split('\n')
-        formatted_lines = []
-        for line in lines:
-            line = line.strip()
-            if not line:
-                formatted_lines.append(line)
-                continue
-                
-            # Mark quotes
-            quote_pattern = r'"[^"]+"|«[^»]+»|"[^"]+"'
-            quotes = re.findall(quote_pattern, line)
-            for i, quote in enumerate(quotes):
-                line = line.replace(quote, f"[نقل قول]: {quote}")
-            
-            # Mark titles (lines without punctuation followed by blank line)
-            if not any(line.endswith(p) for p in ['.', '!', '?', '؟', '۔']):
-                formatted_lines.append(f"[عنوان]: {line}")
-            else:
-                formatted_lines.append(line)
-                
-        return '\n'.join(formatted_lines)
-
-    formatted_text = format_text_for_editing(text)
-
-    # Adjust parameters based on model
-    if model == "gpt-4-turbo-preview":
-        temperature = 0.3  # Slightly more creative
-        max_tokens = min(4000, len(text.split()) * 2)
-    else:  # gpt-3.5-turbo
-        temperature = 0.4  # More creative
-        max_tokens = min(3000, len(text.split()) * 2)
-
-    # Simple system prompt
-    system_prompt = """You are a Persian text editor. Your task is to improve the text while preserving its meaning:
-
-1. Keep all text marked with [نقل قول] exactly as is
-2. Keep all text marked with [عنوان] as titles
-3. Fix grammar and punctuation errors
-4. Improve sentence structure and flow
-5. Keep the same meaning and key points
-
-Most importantly:
-- Make minimal necessary changes
-- Never remove content without replacement
-- Preserve all quotes and titles exactly"""
-
-    # Simple user prompt
-    user_prompt = f"""Edit this Persian text to improve its quality while keeping its meaning:
-
-Text to edit:
-{formatted_text}"""
-
-    try:
-        response = await openai_client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=temperature,
-            max_tokens=max_tokens,
-            presence_penalty=0.0,
-            frequency_penalty=0.0,
-            top_p=0.7
-        )
-        
-        if not response.choices:
-            raise ValueError("No response from OpenAI API")
-            
-        edited_text = response.choices[0].message.content.strip()
-        
-        if not edited_text:
-            raise ValueError("Empty response from OpenAI API")
-        
-        # Very lenient verification
-        if not verify_text(edited_text, text):
-            logger.warning("Text verification failed, attempting to fix...")
-            edited_text = preserve_quotes(text, edited_text)
-            
-            if not verify_text(edited_text, text):
-                logger.warning("Second verification failed, using more lenient check...")
-                if not check_basic_completeness(edited_text):
-                    logger.warning("Basic completeness check failed...")
-                    if not check_content_preserved(text, edited_text, threshold=0.1):
-                        raise ValueError("Failed to preserve content while editing")
-        
-        # Content preservation check with multiple thresholds
-        if not check_content_preserved(text, edited_text, threshold=0.2):
-            logger.warning("Content preservation check failed, attempting more lenient threshold...")
-            if not check_content_preserved(text, edited_text, threshold=0.1):
-                raise ValueError("Failed to preserve content while editing")
-            
-        return edited_text
-        
-    except openai.APIError as e:
-        logger.error(f"OpenAI API error: {str(e)}")
-        raise ValueError(f"OpenAI API error: {str(e)}")
-    except asyncio.TimeoutError:
-        logger.error("OpenAI API timeout")
-        raise TimeoutError("OpenAI API timeout")
     except Exception as e:
-        logger.error(f"Error in OpenAI processing: {str(e)}")
+        logger.error(f"Gemini translation error: {str(e)}")
         raise
 
-# Setup API
-app = FastAPI()
+async def process_openai_edit(text: str, model: str = ModelType.GPT35.value) -> str:
+    """Process text editing using OpenAI API."""
+    try:
+        # Create a proper translation prompt
+        prompt = EDIT_PROMPT.format(text=text)
+        
+        # Generate translation with retry logic
+        @backoff.on_exception(backoff.expo, Exception, max_tries=3)
+        def generate_with_retry():
+            return openai_client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+                max_tokens=4000
+            )
+        
+        loop = asyncio.get_event_loop()
+        response = await asyncio.wait_for(
+            loop.run_in_executor(None, generate_with_retry),
+            timeout=30.0
+        )
+        
+        if not response or not response.choices:
+            raise ValueError("Empty response from OpenAI API")
+            
+        logger.info("Successfully generated translation")
+        return response.choices[0].message.content
+        
+    except Exception as e:
+        logger.error(f"OpenAI translation error: {str(e)}")
+        raise
 
-# Setup templates
-templates = Jinja2Templates(directory="templates")
+def format_text_for_editing(text: str) -> str:
+    """Format text for editing by adding clear instructions."""
+    return f"""Please edit the following Persian text to improve its grammar, style, and clarity while maintaining its meaning. 
+    Keep the same tone and formality level. Only make necessary changes.
 
-# Mount static files
-app.mount("/static", StaticFiles(directory="static"), name="static")
+    Original text:
+    {text}
+
+    Edited text:"""
 
 @app.get("/")
 async def read_root(request: Request):
-    # Get current API status
-    status = await check_status()
-    return templates.TemplateResponse("index.html", {
-        "request": request,
-        "api_status": status
-    })
+    try:
+        # Get current API status
+        status = await get_status()
+        return templates.TemplateResponse("index.html", {
+            "request": request,
+            "api_status": status
+        })
+    except Exception as e:
+        logger.error(f"Error in root endpoint: {str(e)}")
+        # Return a basic template even if status check fails
+        return templates.TemplateResponse("index.html", {
+            "request": request,
+            "api_status": {
+                "status": "error",
+                "services": {
+                    "openai": {"status": "unknown"},
+                    "gemini": {"status": "unknown"}
+                },
+                "message": "Unable to check service status"
+            }
+        })
 
 @app.post("/edit")
 async def edit(request: EditRequest) -> EditResponse:
@@ -578,51 +857,92 @@ async def edit(request: EditRequest) -> EditResponse:
         if not text:
             raise HTTPException(status_code=400, detail="No text provided")
             
-        edited_text = text  # Initialize with original text
+        edited_text = text
         explanation = ""
         error_occurred = False
+        changes = []
+        diff_html = text
         
         try:
             logger.info(f"Received edit request with model: {request.model}")
             
-            if request.model == ModelType.GEMINI.value:
-                logger.info(f"Attempting to edit with Gemini model")
-                edited_text = await process_gemini_edit(text)
-                explanation = "✅ Used Gemini for editing"
-            elif request.model == ModelType.GPT35.value:
-                logger.info(f"Attempting to edit with GPT-3.5 model")
-                edited_text = await process_openai_edit(text, model=ModelType.GPT35.value)
-                explanation = "✅ Used GPT-3.5 for editing"
-            elif request.model == ModelType.GPT4.value:
-                logger.info(f"Attempting to edit with GPT-4 model")
-                edited_text = await process_openai_edit(text, model=ModelType.GPT4.value)
-                explanation = "✅ Used GPT-4 for editing"
-            else:
-                logger.error(f"Unsupported model requested: {request.model}")
+            # Validate model type
+            if request.model not in [m.value for m in ModelType]:
+                logger.error(f"Invalid model type received: {request.model}")
                 raise HTTPException(status_code=400, detail=f"Unsupported model: {request.model}")
+            
+            # Check connection state before processing
+            if not await connection_pool.ensure_connections():
+                logger.error("Failed to ensure API connections")
+                raise HTTPException(status_code=503, detail="API services are currently unavailable. Please try again later.")
+            
+            if request.model in [ModelType.GEMINI.value, ModelType.GEMINI2.value]:
+                if not connection_pool._gemini_state.is_connected:
+                    logger.error("Gemini API not connected")
+                    raise HTTPException(status_code=503, detail="Gemini API is currently unavailable. Please try again later or use a different model.")
+                logger.info("Attempting to edit with Gemini model")
+                try:
+                    edited_text = await process_gemini_edit(text)
+                    explanation = "✅ Used Gemini for editing"
+                except Exception as e:
+                    logger.error(f"Gemini processing error: {str(e)}")
+                    if "PERMISSION_DENIED" in str(e):
+                        raise HTTPException(status_code=401, detail="Gemini API authentication failed. Please check your API key.")
+                    elif "NOT_FOUND" in str(e):
+                        raise HTTPException(status_code=404, detail="Gemini model not found. Please try a different model.")
+                    elif "quota" in str(e).lower():
+                        raise HTTPException(status_code=429, detail="Gemini API quota exceeded. Please try again later.")
+                    else:
+                        raise HTTPException(status_code=500, detail=f"Error processing with Gemini: {str(e)}")
+                    
+            elif request.model in [ModelType.GPT35.value, ModelType.GPT4.value]:
+                if not connection_pool._openai_state.is_connected:
+                    logger.error("OpenAI API not connected")
+                    raise HTTPException(status_code=503, detail="OpenAI API is currently unavailable. Please try again later or use a different model.")
+                try:
+                    if request.model == ModelType.GPT4.value and not OPENAI_API_KEY.startswith("sk-org-"):
+                        logger.warning("GPT-4 requested but not available, falling back to GPT-3.5")
+                        edited_text = await process_openai_edit(text, model=ModelType.GPT35.value)
+                        explanation = "⚠️ GPT-4 not available, used GPT-3.5 instead"
+                    else:
+                        edited_text = await process_openai_edit(text, model=request.model)
+                        explanation = f"✅ Used {request.model} for editing"
+                except Exception as e:
+                    logger.error(f"OpenAI processing error: {str(e)}")
+                    if "authentication" in str(e).lower():
+                        raise HTTPException(status_code=401, detail="OpenAI API authentication failed. Please check your API key.")
+                    elif "rate_limit" in str(e).lower():
+                        raise HTTPException(status_code=429, detail="OpenAI API rate limit exceeded. Please wait a moment and try again.")
+                    elif "context_length" in str(e).lower():
+                        raise HTTPException(status_code=413, detail="Text is too long for the selected model. Please try with a shorter text.")
+                    else:
+                        raise HTTPException(status_code=500, detail=f"Error processing with OpenAI: {str(e)}")
+            
+        except HTTPException as e:
+            logger.error(f"HTTP error in edit endpoint: {str(e)}")
+            raise e
         except Exception as e:
             error_occurred = True
             error_msg = str(e)
             logger.error(f"Edit error with {request.model}: {error_msg}")
             
-            if "404" in error_msg:
-                raise HTTPException(status_code=400, detail=f"Model {request.model} is currently unavailable. Please try a different model.")
+            if "rate_limit" in error_msg.lower():
+                raise HTTPException(status_code=429, detail="Rate limit exceeded. Please wait a moment and try again.")
             elif "timeout" in error_msg.lower():
-                raise HTTPException(status_code=408, detail="The request timed out. Please try again or use a different model.")
+                raise HTTPException(status_code=408, detail="Request timed out. Please try again with a shorter text or use a different model.")
             elif "api key" in error_msg.lower():
-                raise HTTPException(status_code=401, detail="Invalid API key. Please contact support.")
+                raise HTTPException(status_code=401, detail="API authentication failed. Please contact support.")
+            elif "context_length" in error_msg.lower():
+                raise HTTPException(status_code=413, detail="Text is too long for the selected model. Please try with a shorter text.")
             else:
-                raise HTTPException(status_code=400, detail=str(e))
+                raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {error_msg}")
             
         if edited_text == text and not error_occurred:
-            explanation = f"⚠️ No changes were made to the text. The model either found no improvements needed or failed to make meaningful changes while preserving the content."
+            explanation = "⚠️ No changes were made to the text. The model either found no improvements needed or failed to make meaningful changes."
         elif edited_text != text:
-            explanation = f"✅ Successfully applied text improvements"
-            
-            # Generate changes and diff HTML
+            explanation = "✅ Successfully applied text improvements"
             changes = detect_changes(text, edited_text)
             diff_html = generate_diff_html(text, edited_text)
-            
             logger.info(f"Successfully processed edit request. Changes detected: {len(changes)}")
             
         return EditResponse(
@@ -632,35 +952,86 @@ async def edit(request: EditRequest) -> EditResponse:
             diff_html=diff_html
         )
             
+    except HTTPException as e:
+        logger.error(f"HTTP error in edit endpoint: {str(e)}")
+        raise e
     except Exception as e:
-        error_msg = str(e)
-        logger.error(f"Edit error: {error_msg}")
-        user_friendly_msg = "An unexpected error occurred"
-        
-        if isinstance(e, HTTPException):
-            user_friendly_msg = e.detail
-        elif "api key" in error_msg.lower():
-            user_friendly_msg = "API key error - Please contact support"
-        elif "timeout" in error_msg.lower():
-            user_friendly_msg = "Request timed out - Please try again"
-        elif "too many requests" in error_msg.lower():
-            user_friendly_msg = "Too many requests - Please wait a moment and try again"
-        
-        return EditResponse(
-            edited_text=text,
-            technical_explanation=f"❌ {user_friendly_msg}",
-            changes=[],
-            diff_html=text
-        )
+        logger.error(f"Unexpected edit error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
 @app.get("/status")
-async def check_status() -> StatusResponse:
-    """Check the status of all API connections."""
-    openai_status, gemini_status = await test_api_connections()
-    return StatusResponse(
-        openai_status=openai_status,
-        gemini_status=gemini_status
-    )
+async def get_status() -> StatusResponse:
+    """Get the current status of API services."""
+    try:
+        # Initialize connections if needed
+        if not await connection_pool.ensure_connections():
+            logger.warning("Failed to ensure connections")
+            return StatusResponse(
+                status="degraded",
+                services={
+                    "gemini": {
+                        "status": "offline",
+                        "last_checked": None,
+                        "error": connection_pool._last_error or "Connection check failed"
+                    },
+                    "openai": {
+                        "status": "offline",
+                        "last_checked": None,
+                        "error": connection_pool._last_error or "Connection check failed",
+                        "gpt4_available": False
+                    }
+                },
+                message="Some services are experiencing issues"
+            )
+        
+        status = {
+            "gemini": {
+                "status": "online" if connection_pool._gemini_state.is_connected else "offline",
+                "last_checked": connection_pool._gemini_state.last_check.isoformat() if connection_pool._gemini_state.last_check else None,
+                "error": connection_pool._gemini_state.last_error or connection_pool._last_error
+            },
+            "openai": {
+                "status": "online" if connection_pool._openai_state.is_connected else "offline",
+                "last_checked": connection_pool._openai_state.last_check.isoformat() if connection_pool._openai_state.last_check else None,
+                "error": connection_pool._openai_state.last_error or connection_pool._last_error,
+                "gpt4_available": OPENAI_API_KEY.startswith("sk-org-")
+            }
+        }
+        
+        all_services_online = all(
+            service["status"] == "online" 
+            for service in status.values()
+        )
+        
+        error_message = "All services operational" if all_services_online else "Some services are experiencing issues"
+        if connection_pool._last_error:
+            error_message = f"Connection error: {connection_pool._last_error}"
+        
+        return StatusResponse(
+            status="healthy" if all_services_online else "degraded",
+            services=status,
+            message=error_message
+        )
+        
+    except Exception as e:
+        logger.error(f"Error checking service status: {str(e)}")
+        return StatusResponse(
+            status="error",
+            services={
+                "gemini": {
+                    "status": "unknown",
+                    "last_checked": None,
+                    "error": str(e) or connection_pool._last_error
+                },
+                "openai": {
+                    "status": "unknown",
+                    "last_checked": None,
+                    "error": str(e) or connection_pool._last_error,
+                    "gpt4_available": False
+                }
+            },
+            message=f"Unable to check service status: {str(e)}"
+        )
 
 @app.post("/translate")
 async def translate_text(request: Request):
@@ -669,26 +1040,96 @@ async def translate_text(request: Request):
         text = data.get("text", "")
         model_type = data.get("model", "GPT35")
         
-        if model_type == "GEMINI":
-            # Use Gemini for translation with proper prompt
-            model = genai.GenerativeModel("models/gemini-1.5-pro")
-            prompt = f"Please translate the following text to English. Keep the translation accurate and natural:\n\n{text}"
-            response = model.generate_content(prompt)
-            return {"translated_text": response.text}
+        if not text.strip():
+            raise HTTPException(status_code=400, detail="No text provided")
+        
+        if len(text) > 30000:  # Reduced limit for safety
+            raise HTTPException(status_code=400, detail="Text too long (max 30000 characters)")
+        
+        # Map frontend model names to backend model types
+        model_mapping = {
+            "gemini-1.5-pro": ModelType.GEMINI2.value,
+            "gemini-1.5-flash-8b": ModelType.GEMINI.value,
+            "gpt-3.5-turbo": ModelType.GPT35.value,
+            "gpt-4": ModelType.GPT4.value
+        }
+        
+        model_type = model_mapping.get(model_type, ModelType.GPT35.value)
+        
+        if model_type in [ModelType.GEMINI.value, ModelType.GEMINI2.value]:
+            try:
+                # Configure Gemini
+                genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
+                
+                # Try to use the specified model directly
+                try:
+                    logger.info(f"Attempting to use {model_type} model")
+                    model = genai.GenerativeModel(model_type)
+                    
+                    # Create a proper translation prompt
+                    prompt = TRANSLATION_PROMPT.format(text=text)
+                    
+                    # Generate translation with retry logic
+                    @backoff.on_exception(backoff.expo, Exception, max_tries=3)
+                    def generate_with_retry():
+                        return model.generate_content(prompt)
+                    
+                    loop = asyncio.get_event_loop()
+                    response = await asyncio.wait_for(
+                        loop.run_in_executor(None, generate_with_retry),
+                        timeout=30.0
+                    )
+                    
+                    if not response or not response.text:
+                        raise ValueError("Empty response from Gemini API")
+                        
+                    logger.info("Successfully generated translation")
+                    return {"translated_text": response.text}
+                    
+                except Exception as e:
+                    logger.error(f"Failed to use {model_type} model: {str(e)}")
+                    raise
+                    
+            except asyncio.TimeoutError:
+                raise HTTPException(status_code=408, detail="Gemini API timeout")
+            except Exception as e:
+                logger.error(f"Gemini translation error: {str(e)}")
+                raise HTTPException(status_code=500, detail=str(e))
         else:
-            # Use OpenAI for translation with proper prompt
-            messages = [
-                {"role": "system", "content": "You are a professional translator. Translate the given text to English accurately and naturally."},
-                {"role": "user", "content": text}
-            ]
-            
-            model_name = "gpt-3.5-turbo" if model_type == "GPT35" else "gpt-4-turbo-preview"
-            response = await openai_client.chat.completions.create(
-                model=model_name,
-                messages=messages
-            )
-            return {"translated_text": response.choices[0].message.content}
-            
+            try:
+                # Create a proper translation prompt
+                prompt = TRANSLATION_PROMPT.format(text=text)
+                
+                # Generate translation with retry logic
+                @backoff.on_exception(backoff.expo, Exception, max_tries=3)
+                def generate_with_retry():
+                    return openai_client.chat.completions.create(
+                        model=model_type,
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0.7,
+                        max_tokens=4000
+                    )
+                
+                loop = asyncio.get_event_loop()
+                response = await asyncio.wait_for(
+                    loop.run_in_executor(None, generate_with_retry),
+                    timeout=30.0
+                )
+                
+                if not response or not response.choices:
+                    raise ValueError("Empty response from OpenAI API")
+                    
+                logger.info("Successfully generated translation")
+                return {"translated_text": response.choices[0].message.content}
+                
+            except asyncio.TimeoutError:
+                raise HTTPException(status_code=408, detail="OpenAI API timeout")
+            except Exception as e:
+                logger.error(f"OpenAI translation error: {str(e)}")
+                raise HTTPException(status_code=500, detail=str(e))
+                
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Translation error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -697,35 +1138,43 @@ if __name__ == "__main__":
     import uvicorn
     import socket
     
-    PORT = 8088
+    PORT = 8090  # Update port to match the one being used
     MAX_PORT_ATTEMPTS = 10
     
-    # Try to find an available port
-    for port_attempt in range(PORT, PORT + MAX_PORT_ATTEMPTS):
-        try:
-            # Test if port is in use
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind(('0.0.0.0', port_attempt))
-                PORT = port_attempt
-                break
-        except OSError:
-            if port_attempt == PORT + MAX_PORT_ATTEMPTS - 1:
-                logger.error(f"Could not find an available port in range {PORT}-{PORT + MAX_PORT_ATTEMPTS}")
-                raise
-            continue
-    
-    logger.info(f"Starting server on port {PORT}")
-    
-    # Check API connections
-    openai_status, gemini_status = asyncio.run(test_api_connections())
-    logger.info("=== API Connection Status ===")
-    logger.info(f"OpenAI API: {openai_status}")
-    logger.info(f"Gemini API: {gemini_status}")
-    logger.info("==========================")
-    
-    uvicorn.run(
-        "translation_bot:app",
-        host="0.0.0.0",
-        port=PORT,
-        reload=True
-    ) 
+    try:
+        # Try to find an available port
+        for port_attempt in range(PORT, PORT + MAX_PORT_ATTEMPTS):
+            try:
+                # Test if port is in use
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.bind(('0.0.0.0', port_attempt))
+                    PORT = port_attempt
+                    break
+            except OSError as e:
+                logger.error(f"Port {port_attempt} is not available: {str(e)}")
+                if port_attempt == PORT + MAX_PORT_ATTEMPTS - 1:
+                    logger.error(f"Could not find an available port in range {PORT}-{PORT + MAX_PORT_ATTEMPTS}")
+                    raise
+                continue
+        
+        logger.info(f"Starting server on port {PORT}")
+        
+        # Check API connections
+        openai_status, gemini_status, gemini2_status = asyncio.run(test_api_connections())
+        logger.info("=== API Connection Status ===")
+        logger.info(f"OpenAI API: {openai_status}")
+        logger.info(f"Gemini 1.5 API: {gemini_status}")
+        logger.info(f"Gemini 2.0 API: {gemini2_status}")
+        logger.info("==========================")
+        
+        # Start the server with more detailed logging
+        uvicorn.run(
+            "translation_bot:app",
+            host="0.0.0.0",
+            port=PORT,
+            reload=True,
+            log_level="debug"
+        )
+    except Exception as e:
+        logger.error(f"Failed to start server: {str(e)}")
+        raise 
