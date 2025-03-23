@@ -88,39 +88,20 @@ def get_gemini_model():
     """Get or create Gemini model instance."""
     try:
         generation_config = {
-            "temperature": 0.3,
-            "top_p": 0.8,
-            "top_k": 40,
-            "max_output_tokens": 2048,
+            "temperature": 0.1,  # Lower temperature for faster, more deterministic responses
+            "top_p": 0.95,      # Higher top_p for faster sampling
+            "top_k": 20,        # Lower top_k for faster sampling
+            "max_output_tokens": 1024,  # Lower max tokens since we don't need very long outputs
+            "candidate_count": 1,  # Only generate one candidate
         }
-        
-        safety_settings = [
-            {
-                "category": "HARM_CATEGORY_HARASSMENT",
-                "threshold": "BLOCK_NONE",
-            },
-            {
-                "category": "HARM_CATEGORY_HATE_SPEECH",
-                "threshold": "BLOCK_NONE",
-            },
-            {
-                "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                "threshold": "BLOCK_NONE",
-            },
-            {
-                "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-                "threshold": "BLOCK_NONE",
-            },
-        ]
         
         model = genai.GenerativeModel(
             model_name="models/gemini-1.5-pro-latest",
-            generation_config=generation_config,
-            safety_settings=safety_settings
+            generation_config=generation_config
         )
         
         # Test the model with a simple prompt
-        response = model.generate_content("Test.")
+        response = model.generate_content("Test.")  # Removed timeout
         if not response or not response.text:
             raise Exception("Failed to generate content with Gemini model")
         return model
@@ -134,10 +115,10 @@ app = FastAPI()
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:9090", "http://localhost:9091", "http://localhost:9092"],  # Add your production domains here
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST"],  # Specify only the methods you need
+    allow_headers=["Content-Type", "Authorization"],  # Specify only the headers you need
 )
 
 # Setup templates
@@ -147,8 +128,6 @@ templates = Jinja2Templates(directory="templates")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Define editing stages and context
-PUBLISHING_CONTEXT = """شما یک ویراستار متون فارسی در یک انتشارات حرفه‌ای هستید. هدف شما بهبود کیفیت متن با حفظ معنی و محتوای اصلی است."""
-
 EDIT_STAGES = {
     'grammar': {
         'name': 'اصلاح دستور زبان و نگارش',
@@ -267,31 +246,57 @@ model_mapping = {
     "gemini-1.5-flash-8b": ModelType.GEMINI.value  # For translation section
 }
 
+def validate_word_count(original_text: str, edited_text: str, tolerance: int = 20) -> bool:
+    """Validate that the edited text's word count is within tolerance of the original."""
+    original_words = len(original_text.split())
+    edited_words = len(edited_text.split())
+    difference = abs(original_words - edited_words)
+    return difference <= tolerance
+
 async def process_gemini_edit(text: str, mode: EditMode = EditMode.FAST) -> str:
     """Process text editing using Gemini API."""
     try:
         logger.info("Starting Gemini edit process")
         model = get_gemini_model()
         
-        prompt = f"""Edit this Persian text while maintaining ALL content and meaning:
-
-        Text to edit: {text}
+        # Simplified prompt for faster processing
+        prompt = f"""شما یک ویراستار متخصص متون کوچینگ هستید. متن زیر را با حفظ ساختار و تعداد کلمات (حداکثر ۲۰ کلمه تفاوت) ویرایش کنید.
         
-        Rules:
-        1. Keep all main ideas and topics
-        2. Improve grammar and style
-        3. Use proper Persian punctuation and spacing
+        نکات مهم:
+        ۱. عناوین و سرفصل‌ها را دقیقاً حفظ کنید
+        ۲. پاراگراف‌بندی را حفظ کنید
+        ۳. تعداد کلمات را حفظ کنید
+        ۴. فقط اصلاحات ضروری را انجام دهید
         
-        Edited text:"""
+        متن برای ویرایش:
+        {text}
         
-        response = model.generate_content(prompt)
+        متن ویرایش شده:"""
         
-        if not response or not response.text:
-            logger.warning("Empty response, returning original text")
-            return text
+        max_attempts = 2  # Reduced from 3 to 2 attempts
+        for attempt in range(max_attempts):
+            try:
+                response = model.generate_content(prompt)  # Removed timeout
+                
+                if not response or not response.text:
+                    logger.warning(f"Empty response on attempt {attempt + 1}")
+                    continue
+                    
+                edited_text = response.text.strip()
+                
+                # Validate word count
+                if validate_word_count(text, edited_text):
+                    return edited_text
+                else:
+                    logger.warning(f"Word count validation failed on attempt {attempt + 1}")
+                    
+            except Exception as e:
+                logger.error(f"Error on attempt {attempt + 1}: {str(e)}")
+                continue
+                
+        logger.warning("All attempts failed, returning original text")
+        return text
             
-        return response.text.strip()
-        
     except Exception as e:
         logger.error(f"Gemini edit error: {str(e)}")
         return text
@@ -326,7 +331,7 @@ async def process_openai_edit(text: str, model: str = ModelType.GPT35.value, mod
         client = get_async_openai_client()
         
         # Optimize chunk sizes for better performance
-        max_chunk_size = 3000 if model == "gpt-4" else 2000  # Smaller chunks for faster processing
+        max_chunk_size = 1500 if model == "gpt-4" else 1000  # Even smaller chunks for faster processing
         chunks = chunk_text(text, max_chunk_size)
         logger.info(f"Split text into {len(chunks)} chunks")
         
@@ -336,50 +341,69 @@ async def process_openai_edit(text: str, model: str = ModelType.GPT35.value, mod
             try:
                 # Different prompts for fast vs detailed editing
                 if mode == EditMode.FAST:
-                    system_prompt = """You are a professional Persian text editor. Your task is to edit and improve the text while:
-1. Fixing grammar and punctuation errors
-2. Improving sentence structure and flow
-3. Maintaining the exact same meaning and content
-4. Using proper Persian writing standards
-DO NOT translate the text. Only edit and improve the Persian text."""
+                    system_prompt = """شما یک ویراستار متخصص متون کوچینگ در یک انتشارات حرفه‌ای هستید. هدف شما بهبود کیفیت متن با حفظ معنی، محتوای اصلی و اصطلاحات تخصصی کوچینگ است.
+لطفاً متن را با رعایت موارد زیر ویرایش کنید:
+۱. اصلاح خطاهای دستوری و نقطه‌گذاری
+۲. حفظ و استفاده صحیح از اصطلاحات تخصصی کوچینگ
+۳. بهبود ساختار جملات و روانی متن
+۴. حفظ دقیق معنا و محتوای اصلی
+۵. رعایت اصول نگارش فارسی معیار
+۶. تأکید بر حفظ و تقویت لحن رسمی و حرفه‌ای
+۷. حفظ تمام پاراگراف‌ها و ساختار متن
+نکته مهم: تعداد کلمات متن ویرایش شده باید تقریباً برابر با متن اصلی باشد (حداکثر ۲۰ کلمه کمتر یا بیشتر).
+توجه: فقط ویرایش متن فارسی، بدون ترجمه."""
                 else:
-                    system_prompt = """You are a professional Persian text editor. Your task is to carefully edit and improve the text while:
-1. Fixing all grammar, spelling, and punctuation errors
-2. Improving sentence structure, clarity, and readability
-3. Enhancing the overall writing style and professionalism
-4. Maintaining the exact same meaning and content
-5. Using proper Persian writing standards and formal language
-DO NOT translate the text. Only edit and improve the Persian text."""
+                    system_prompt = """شما یک ویراستار متخصص متون کوچینگ در یک انتشارات حرفه‌ای هستید. هدف شما بهبود کیفیت متن با حفظ معنی، محتوای اصلی و اصطلاحات تخصصی کوچینگ است.
+لطفاً متن را با دقت و با رعایت موارد زیر ویرایش کنید:
+۱. اصلاح تمام خطاهای دستوری، املایی و نقطه‌گذاری
+۲. حفظ و کاربرد دقیق اصطلاحات تخصصی کوچینگ
+۳. بهبود ساختار جملات، وضوح و خوانایی متن
+۴. ارتقای سطح نگارش و حرفه‌ای‌تر کردن متن
+۵. حفظ دقیق معنا و محتوای اصلی
+۶. رعایت اصول نگارش فارسی معیار و زبان رسمی
+۷. تأکید ویژه بر حفظ و تقویت لحن رسمی و کاملاً حرفه‌ای
+۸. حفظ تمام پاراگراف‌ها و ساختار متن
+نکته مهم: تعداد کلمات متن ویرایش شده باید تقریباً برابر با متن اصلی باشد (حداکثر ۲۰ کلمه کمتر یا بیشتر).
+توجه: فقط ویرایش متن فارسی، بدون ترجمه."""
 
                 messages = [
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"""Edit this Persian text (part {i+1}/{len(chunks)}) to improve its quality while keeping the exact same meaning and content:
+                    {"role": "user", "content": f"""لطفاً این متن کوچینگ (بخش {i+1}/{len(chunks)}) را با حفظ معنا، محتوا و اصطلاحات تخصصی آن ویرایش کنید.
+تعداد کلمات متن ویرایش شده باید تقریباً برابر با متن اصلی باشد.
 
 {chunk}
 
-Important: DO NOT translate to English. Only edit and improve the Persian text."""}
+نکته مهم: فقط ویرایش متن فارسی، بدون ترجمه."""}
                 ]
                 
-                completion = await client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    temperature=0.3,  # Lower temperature for more consistent editing
-                    max_tokens=max_chunk_size,
-                    timeout=45.0  # Reduced timeout for better performance
-                )
-                
-                if not completion or not completion.choices:
-                    logger.error(f"Empty response from OpenAI for chunk {i+1}")
-                    edited_chunks.append(chunk)  # Keep original chunk if processing fails
-                    continue
+                max_attempts = 2  # Reduced from 3 to 2 attempts
+                for attempt in range(max_attempts):
+                    completion = await client.chat.completions.create(
+                        model=model,
+                        messages=messages,
+                        temperature=0.1,  # Lower temperature for faster, more consistent responses
+                        max_tokens=max_chunk_size,
+                        timeout=20.0,  # Further reduced timeout
+                        presence_penalty=-0.1,  # Slight penalty to prevent wordiness
+                        frequency_penalty=0.1,  # Slight penalty to prevent repetition
+                    )
                     
-                edited_chunk = completion.choices[0].message.content.strip()
-                if not edited_chunk:
-                    logger.error(f"Empty edited text from OpenAI for chunk {i+1}")
-                    edited_chunks.append(chunk)
-                    continue
+                    if not completion or not completion.choices:
+                        logger.error(f"Empty response from OpenAI for chunk {i+1} on attempt {attempt + 1}")
+                        continue
                     
-                edited_chunks.append(edited_chunk)
+                    edited_chunk = completion.choices[0].message.content.strip()
+                    
+                    # Validate word count for this chunk
+                    if validate_word_count(chunk, edited_chunk):
+                        edited_chunks.append(edited_chunk)
+                        break
+                    else:
+                        logger.warning(f"Word count validation failed for chunk {i+1} on attempt {attempt + 1}")
+                        
+                    if attempt == max_attempts - 1:
+                        logger.warning(f"All attempts failed for chunk {i+1}, using original chunk")
+                        edited_chunks.append(chunk)
                 
             except Exception as e:
                 logger.error(f"Error processing chunk {i+1}: {str(e)}")
@@ -408,7 +432,7 @@ async def edit_text(request: EditRequest) -> EditResponse:
             raise HTTPException(status_code=400, detail=f"Invalid model type: {request.model}")
             
         # Add length validation with more reasonable limits
-        max_length = 12000 if model_type == "gpt-4" else 8000  # Adjusted limits
+        max_length = 6000 if model_type == "gpt-4" else 4000  # Further reduced limits for faster processing
         if len(text) > max_length:
             raise HTTPException(
                 status_code=400, 
@@ -517,7 +541,7 @@ async def translate_text(request: Request):
                     client = get_async_openai_client()
                     
                     # Split text into chunks if needed
-                    max_chunk_size = 4000 if model_type == "gpt-4" else 2500
+                    max_chunk_size = 2500 if model_type == "gpt-4" else 1500  # Reduced chunk sizes for translation
                     chunks = chunk_text(text, max_chunk_size)
                     logger.info(f"Split text into {len(chunks)} chunks")
                     
