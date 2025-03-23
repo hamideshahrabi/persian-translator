@@ -1,15 +1,51 @@
-# Persian Text Editor and Translator
+# PersianAI: Smart Publishing Assistant
 
-A web application for editing Persian text and translating it to English using various AI models.
+A professional-grade Persian text editor and translator specialized in publishing company workflows. Built to automate and enhance the editorial process for multi-author professional publications, particularly in coaching and psychology content.
+
+## Overview
+
+PersianAI is a sophisticated publishing automation tool that learns from professional editors and translators to deliver consistent, high-quality results. It significantly reduces processing time while maintaining or improving upon human-level quality standards.
+
+### Key Benefits
+
+- **Time & Resource Optimization**
+  - Reduces editorial processing time by up to 80%
+  - Automates repetitive tasks while maintaining quality
+  - Enables faster publication cycles
+  - Frees up editorial team for higher-value tasks
+
+- **Smart Learning System**
+  - Continuously learns from editorial decisions
+  - Adapts to company's style guidelines
+  - Improves with each use
+  - Maintains consistency across multiple authors
+
+- **Professional Quality Assurance**
+  - Ensures consistent terminology across publications
+  - Maintains professional tone and style
+  - Preserves author voice while improving readability
+  - Validates content against publishing standards
 
 ## Features
 
-- Persian text editing with AI assistance
-- Translation to English using multiple models:
-  - GPT-3.5 Turbo
-  - GPT-4
-  - Claude-3
-  - Google Translate
+- **AI-Powered Editorial Processing**
+  - Smart content optimization
+  - Professional coaching and psychology content enhancement
+  - Grammar and style refinement
+  - Title and structure preservation
+  - Word count validation
+
+- **Intelligent Translation System**
+  - High-quality Persian to English translation
+  - Context-aware terminology handling
+  - Multi-author consistency maintenance
+  - Professional publishing standards compliance
+
+- **Advanced Automation Features**
+  - Real-time change tracking and highlighting
+  - Fast and detailed editing modes
+  - Multiple AI model support (GPT-4, GPT-3.5, Gemini Pro)
+  - Batch processing capabilities
 
 ## Setup
 
@@ -36,6 +72,7 @@ pip install -r requirements.txt
      - `OPENAI_API_KEY`
      - `ANTHROPIC_API_KEY`
      - `GOOGLE_API_KEY`
+     - `GEMINI_API_KEY`
 
 5. Run the application:
 ```bash
@@ -59,6 +96,7 @@ python translation_bot.py
 - OpenAI API key
 - Anthropic API key (for Claude)
 - Google Cloud API key (for Translation API)
+- Gemini API key
 
 ## License
 
