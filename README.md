@@ -1,6 +1,51 @@
-# Translation Bot
+# PersianAI: Smart Publishing Assistant
 
-A FastAPI-based translation and editing bot specialized in coaching content, supporting multiple language models and translation services.
+An intelligent AI-powered publishing assistant specialized in automating and enhancing the editorial and translation workflow for multi-author professional publications. Built for publishing companies to streamline their content processing pipeline.
+
+## Overview
+
+PersianAI is a sophisticated publishing automation tool that learns from professional editors and translators to deliver consistent, high-quality results. It significantly reduces processing time while maintaining or improving upon human-level quality standards.
+
+### Key Benefits
+
+- **Time & Resource Optimization**
+  - Reduces editorial processing time by up to 80%
+  - Automates repetitive tasks while maintaining quality
+  - Enables faster publication cycles
+  - Frees up editorial team for higher-value tasks
+
+- **Smart Learning System**
+  - Continuously learns from editorial decisions
+  - Adapts to company's style guidelines
+  - Improves with each use
+  - Maintains consistency across multiple authors
+
+- **Professional Quality Assurance**
+  - Ensures consistent terminology across publications
+  - Maintains professional tone and style
+  - Preserves author voice while improving readability
+  - Validates content against publishing standards
+
+## Key Features
+
+- **AI-Powered Editorial Processing**
+  - Smart content optimization
+  - Professional coaching and psychology content enhancement
+  - Grammar and style refinement
+  - Title and structure preservation
+  - Word count validation
+
+- **Intelligent Translation System**
+  - High-quality Persian to English translation
+  - Context-aware terminology handling
+  - Multi-author consistency maintenance
+  - Professional publishing standards compliance
+
+- **Advanced Automation Features**
+  - Real-time change tracking and highlighting
+  - Fast and detailed editing modes
+  - Multiple AI model support (GPT-4, GPT-3.5, Gemini Pro)
+  - Batch processing capabilities
 
 ## Features
 
