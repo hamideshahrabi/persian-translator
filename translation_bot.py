@@ -1,925 +1,707 @@
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
+from typing import List, Optional, Dict, Union, Tuple, Any
 import os
 from dotenv import load_dotenv
-import requests
 import logging
 import json
 from enum import Enum
 import google.generativeai as genai
+import difflib
+import re
+import openai
+import asyncio
+from functools import lru_cache
+from difflib import SequenceMatcher
+from html import escape
+from contextlib import asynccontextmanager
+import socket
+import httpx
+import aiohttp
+import backoff  # For exponential backoff
+from typing import Optional, Dict, Any
+import threading
+import time
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from improvements import TRANSLATION_PROMPT, EDIT_PROMPT, EDIT_PROMPT_DETAILED
+import uvicorn
+from fastapi.middleware.cors import CORSMiddleware
+import psutil
+from openai import OpenAI, AsyncOpenAI
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure logging and load API keys
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-# Load API keys
-load_dotenv()
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')  # For Claude
-GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')  # For Google Cloud Translation
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')  # Separate key for Gemini
-logger.info(f"Loaded API Keys - OpenAI: {'Present' if OPENAI_API_KEY else 'Missing'}, "
-           f"Anthropic: {'Present' if ANTHROPIC_API_KEY else 'Missing'}, "
-           f"Google Cloud: {'Present' if GOOGLE_API_KEY else 'Missing'}, "
-           f"Gemini: {'Present' if GEMINI_API_KEY else 'Missing'}")
+# Load environment variables once at startup
+load_dotenv(override=True)  # Force reload of environment variables
 
-# Setup API
+# Initialize API keys
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+
+if not GOOGLE_API_KEY:
+    raise ValueError("GOOGLE_API_KEY environment variable is not set")
+if not OPENAI_API_KEY:
+    raise ValueError("OPENAI_API_KEY environment variable is not set")
+
+# Initialize Gemini
+genai.configure(api_key=GOOGLE_API_KEY)
+
+# Initialize OpenAI with better configuration
+@lru_cache()
+def get_sync_openai_client():
+    """Get or create synchronous OpenAI client instance."""
+    try:
+        return OpenAI(
+            api_key=OPENAI_API_KEY,
+            timeout=httpx.Timeout(60.0, connect=10.0, read=30.0, write=30.0),
+            max_retries=3
+        )
+    except Exception as e:
+        logger.error(f"Error initializing sync OpenAI client: {str(e)}")
+        raise
+
+@lru_cache()
+def get_async_openai_client():
+    """Get or create async OpenAI client instance."""
+    try:
+        return AsyncOpenAI(
+            api_key=OPENAI_API_KEY,
+            timeout=httpx.Timeout(60.0, connect=10.0, read=30.0, write=30.0),
+            max_retries=3
+        )
+    except Exception as e:
+        logger.error(f"Error initializing async OpenAI client: {str(e)}")
+        raise
+
+# Initialize models
+@lru_cache()
+def get_gemini_model():
+    """Get or create Gemini model instance."""
+    try:
+        generation_config = {
+            "temperature": 0.1,  # Lower temperature for faster, more deterministic responses
+            "top_p": 0.95,      # Higher top_p for faster sampling
+            "top_k": 20,        # Lower top_k for faster sampling
+            "max_output_tokens": 1024,  # Lower max tokens since we don't need very long outputs
+            "candidate_count": 1,  # Only generate one candidate
+        }
+        
+        model = genai.GenerativeModel(
+            model_name="models/gemini-1.5-pro-latest",
+            generation_config=generation_config
+        )
+        
+        # Test the model with a simple prompt
+        response = model.generate_content("Test.")  # Removed timeout
+        if not response or not response.text:
+            raise Exception("Failed to generate content with Gemini model")
+        return model
+    except Exception as e:
+        logger.error(f"Error initializing Gemini model: {str(e)}")
+        raise
+
+# Initialize FastAPI app
 app = FastAPI()
 
-class ModelType(str, Enum):
-    GPT35 = "gpt-3.5-turbo"
-    GPT4 = "gpt-4"
-    CLAUDE = "claude-3"
-    GOOGLE = "google-translate"
-    GEMINI = "gemini"  # Adding Gemini as new option
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:9090", "http://localhost:9091", "http://localhost:9092"],  # Add your production domains here
+    allow_credentials=True,
+    allow_methods=["GET", "POST"],  # Specify only the methods you need
+    allow_headers=["Content-Type", "Authorization"],  # Specify only the headers you need
+)
 
 # Setup templates
 templates = Jinja2Templates(directory="templates")
 
-# Create templates directory and HTML file
-os.makedirs("templates", exist_ok=True)
-with open("templates/index.html", "w") as f:
-    f.write('''
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Persian Text Editor and Translator</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 20px;
-            text-align: center;
-            background-color: #f5f5f5;
-        }
-        .container {
-            display: flex;
-            flex-direction: column;
-            gap: 20px;
-        }
-        .text-section {
-            background: white;
-            padding: 20px;
-            border-radius: 10px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            margin-bottom: 20px;
-            transition: all 0.3s ease;
-        }
-        .text-section:hover {
-            box-shadow: 0 4px 8px rgba(0,0,0,0.15);
-        }
-        textarea {
-            width: 100%;
-            height: 120px;
-            margin: 10px 0;
-            padding: 15px;
-            font-size: 16px;
-            border: 2px solid #e0e0e0;
-            border-radius: 8px;
-            resize: vertical;
-            transition: border-color 0.3s ease;
-        }
-        textarea:focus {
-            border-color: #2196F3;
-            outline: none;
-        }
-        .edited-text {
-            width: 100%;
-            min-height: 50px;
-            margin: 15px 0;
-            padding: 15px;
-            font-size: 16px;
-            border: 2px solid #e0e0e0;
-            border-radius: 8px;
-            background-color: #f8f9fa;
-            text-align: right;
-            direction: rtl;
-        }
-        .explanation {
-            margin-top: 15px;
-            padding: 12px;
-            background-color: #e3f2fd;
-            border-radius: 8px;
-            font-size: 14px;
-            color: #1976D2;
-            text-align: left;
-            direction: ltr;
-            border-left: 4px solid #1976D2;
-        }
-        button {
-            padding: 12px 24px;
-            font-size: 16px;
-            background-color: #2196F3;
-            color: white;
-            border: none;
-            border-radius: 8px;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            margin: 8px;
-        }
-        button:hover {
-            background-color: #1976D2;
-            transform: translateY(-1px);
-        }
-        button:active {
-            transform: translateY(1px);
-        }
-        .loading {
-            color: #666;
-            font-style: italic;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-        }
-        .loading:after {
-            content: "...";
-            animation: dots 1.5s steps(5, end) infinite;
-        }
-        @keyframes dots {
-            0%, 20% { content: "."; }
-            40% { content: ".."; }
-            60%, 100% { content: "..."; }
-        }
-        .error {
-            color: #d32f2f;
-            font-weight: bold;
-            padding: 8px;
-            border-radius: 4px;
-            background-color: #ffebee;
-            border: 1px solid #ffcdd2;
-        }
-        select {
-            padding: 10px;
-            font-size: 16px;
-            margin: 10px 0;
-            border-radius: 8px;
-            border: 2px solid #e0e0e0;
-            background-color: white;
-            cursor: pointer;
-            transition: all 0.3s ease;
-        }
-        select:hover {
-            border-color: #2196F3;
-        }
-        .mode-selection, .model-selection {
-            margin: 15px 0;
-            padding: 15px;
-            background-color: #f8f9fa;
-            border-radius: 8px;
-            border: 1px solid #e0e0e0;
-        }
-        .mode-info, .model-info {
-            margin-top: 8px;
-            font-size: 14px;
-            color: #666;
-            line-height: 1.4;
-        }
-        .section-title {
-            color: #333;
-            margin-bottom: 10px;
-            font-size: 1.2em;
-        }
-        .mode-selection {
-            margin: 10px 0;
-            padding: 10px;
-            background-color: #f8f9fa;
-            border-radius: 5px;
-        }
-        .mode-info {
-            margin-top: 5px;
-            font-size: 14px;
-            color: #666;
-        }
-        #editMode {
-            padding: 8px;
-            font-size: 16px;
-            border-radius: 5px;
-            border: 2px solid #ddd;
-            width: 100%;
-            max-width: 300px;
-        }
-        .results-container {
-            display: flex;
-            flex-direction: column;
-            gap: 20px;
-            margin-top: 20px;
-        }
-        .result-box {
-            background: #ffffff;
-            border: 1px solid #e0e0e0;
-            border-radius: 8px;
-            padding: 15px;
-        }
-        .result-title {
-            font-weight: bold;
-            color: #333;
-            margin-bottom: 10px;
-            font-size: 1.1em;
-        }
-        .edited-text {
-            background-color: #f8f9fa;
-            border: 1px solid #e0e0e0;
-            border-radius: 8px;
-            padding: 15px;
-            margin: 0;
-            font-size: 16px;
-            line-height: 1.6;
-        }
-        .explanation {
-            background-color: #e3f2fd;
-            border: 1px solid #bbdefb;
-            border-radius: 8px;
-            padding: 15px;
-            margin: 0;
-            font-size: 14px;
-            line-height: 1.6;
-            color: #1976D2;
-        }
-    </style>
-</head>
-<body>
-    <h1>Persian Text Editor and Translator</h1>
-    <div class="container">
-        <!-- Persian Text Editor Section -->
-        <div class="text-section">
-            <div class="section-title">Persian Text Editor</div>
-            <div class="mode-selection">
-                <select id="editMode">
-                    <option value="fast">Fast Edit (Grammar & Spelling)</option>
-                    <option value="detailed">Detailed Edit (Professional & Coaching)</option>
-                </select>
-                <div class="mode-info">Fast mode: Quick grammar and spelling fixes. Detailed mode: Deep professional content enhancement.</div>
-            </div>
-            <div class="model-selection">
-                <select id="editModel">
-                    <option value="gpt-3.5-turbo">GPT-3.5 Turbo (Fast & Good)</option>
-                    <option value="gpt-4">GPT-4 (Most Accurate)</option>
-                    <option value="claude-3">Claude-3 (Accurate)</option>
-                    <option value="gemini">Gemini Pro (Advanced AI)</option>
-                </select>
-                <div id="editModelInfo" class="model-info"></div>
-            </div>
-            <textarea id="persianText" placeholder="Write your Persian text here..." dir="rtl"></textarea>
-            <button id="editButton" class="edit">Edit Text</button>
-            
-            <div class="results-container">
-                <div class="result-box">
-                    <div class="result-title">Edited Text:</div>
-                    <div id="editedText" class="edited-text" dir="rtl"></div>
-                </div>
-                <div class="result-box">
-                    <div class="result-title">Explanation:</div>
-                    <div id="explanation" class="explanation"></div>
-                </div>
-            </div>
-        </div>
+# Mount static files
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
-        <!-- Translation Section -->
-        <div class="text-section">
-            <div class="section-title">Translate to English</div>
-            <div class="model-selection">
-                <select id="model">
-                    <option value="gpt-3.5-turbo">GPT-3.5 Turbo (Fast & Good)</option>
-                    <option value="gpt-4">GPT-4 (Most Accurate)</option>
-                    <option value="claude-3">Claude-3 (Accurate)</option>
-                    <option value="google-translate">Google Cloud Translation (Basic)</option>
-                    <option value="gemini">Gemini Pro (Advanced AI)</option>
-                </select>
-                <div id="modelInfo" class="model-info"></div>
-            </div>
-            <button id="translateButton">Translate</button>
-            <div id="result"></div>
-        </div>
-    </div>
+# Define editing stages and context
+EDIT_STAGES = {
+    'grammar': {
+        'name': 'اصلاح دستور زبان و نگارش',
+        'focus': [
+            'اصلاح خطاهای دستوری',
+            'بهبود نقطه‌گذاری',
+            'اصلاح فاصله‌گذاری'
+        ],
+        'examples': 'مثال: تبدیل "من رفتم خانه." به "من به خانه رفتم."'
+    },
+    'clarity': {
+        'name': 'بهبود وضوح و روانی',
+        'focus': [
+            'بهبود ساختار جملات',
+            'حذف ابهام',
+            'افزایش روانی متن'
+        ],
+        'examples': 'مثال: ساده‌سازی جملات پیچیده با حفظ معنی'
+    },
+    'professional': {
+        'name': 'استانداردسازی حرفه‌ای',
+        'focus': [
+            'یکدست‌سازی اصطلاحات',
+            'حفظ لحن حرفه‌ای',
+            'بهبود انسجام متن'
+        ],
+        'examples': 'مثال: استفاده از اصطلاحات استاندارد حرفه‌ای'
+    }
+}
 
-    <script>
-        // Wait for DOM to load
-        window.addEventListener("DOMContentLoaded", () => {
-            // Initialize model info
-            updateModelInfo();
+# Global variables for API clients and keys
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
-            // Add event listeners
-            document.getElementById("editButton").addEventListener("click", editText);
-            document.getElementById("translateButton").addEventListener("click", translateText);
-            document.getElementById("model").addEventListener("change", updateModelInfo);
-            document.getElementById("editModel").addEventListener("change", updateModelInfo);
-            document.getElementById("persianText").addEventListener("keypress", (e) => {
-                if (e.key === "Enter" && e.ctrlKey) {
-                    e.preventDefault();
-                    editText();
-                }
-            });
-        });
+# Connection settings
+MAX_RETRIES = 3
+TIMEOUT = 30.0
+BACKOFF_FACTOR = 2
+INITIAL_BACKOFF = 1
 
-        // Update model information display
-        function updateModelInfo() {
-            const model = document.getElementById("model").value;
-            const modelInfo = document.getElementById("modelInfo");
-            const editModel = document.getElementById("editModel").value;
-            const editModelInfo = document.getElementById("editModelInfo");
-            
-            const modelDescriptions = {
-                "gpt-3.5-turbo": "Fast and reliable processing with good accuracy",
-                "gpt-4": "Most accurate processing, better understanding of context and nuances",
-                "claude-3": "Advanced AI model with strong understanding of Persian language",
-                "google-translate": "Basic machine translation, good for simple texts",
-                "gemini": "Google's advanced AI model, excellent for context and cultural nuances"
-            };
-            
-            modelInfo.textContent = modelDescriptions[model];
-            editModelInfo.textContent = modelDescriptions[editModel];
+# Validate API keys with proper error handling
+def validate_api_keys():
+    """Validate API keys and raise descriptive errors."""
+    missing_keys = []
+    if not OPENAI_API_KEY:
+        missing_keys.append("OpenAI API key")
+    if not GEMINI_API_KEY:
+        missing_keys.append("Gemini API key")
+    
+    if missing_keys:
+        raise ValueError(f"Missing required API keys: {', '.join(missing_keys)}")
+
+# Initialize API clients with proper error handling
+async def initialize_api_clients():
+    """Initialize API clients and verify they work."""
+    try:
+        # Test OpenAI client
+        client = get_sync_openai_client()
+        models = client.models.list()  # Sync call for initialization
+        logger.info("OpenAI client initialized successfully")
+        logger.info(f"Available OpenAI models: {[model.id for model in models.data]}")
+
+        # Test Gemini model
+        model = get_gemini_model()
+        logger.info("Gemini model initialized successfully")
+        
+        return True
+    except Exception as e:
+        logger.error(f"Failed to initialize API clients: {str(e)}")
+        return False
+
+class ModelType(str, Enum):
+    GPT35 = "gpt-3.5-turbo"
+    GPT4 = "gpt-4"
+    GEMINI = "models/gemini-1.5-flash-8b"
+    GEMINI2 = "models/gemini-1.5-pro-latest"
+    
+    @property
+    def description(self) -> str:
+        descriptions = {
+            self.GPT35: "Fast and reliable processing with good accuracy",
+            self.GPT4: "Most accurate processing, better understanding of context and nuances",
+            self.GEMINI: "Gemini 1.5 Flash - Fast and efficient model for text processing",
+            self.GEMINI2: "Gemini 1.5 Pro - Advanced model with better understanding"
         }
-
-        // Handle text editing
-        async function editText() {
-            const text = document.getElementById("persianText").value;
-            const editMode = document.getElementById("editMode").value;
-            const editModel = document.getElementById("editModel").value;
-            const editedText = document.getElementById("editedText");
-            const explanation = document.getElementById("explanation");
-            
-            if (!text.trim()) {
-                editedText.innerHTML = '<span class="error">لطفا متن فارسی را وارد کنید</span>';
-                explanation.innerHTML = "";
-                return;
-            }
-            
-            editedText.innerHTML = '<span class="loading">در حال ویرایش متن...</span>';
-            explanation.innerHTML = "";
-            
-            try {
-                const response = await fetch("/edit", {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json"
-                    },
-                    body: JSON.stringify({ 
-                        text: text,
-                        mode: editMode,
-                        model: editModel
-                    })
-                });
-                
-                if (!response.ok) {
-                    const data = await response.json();
-                    throw new Error(data.detail || "Edit failed");
-                }
-                
-                const data = await response.json();
-                editedText.textContent = data.edited_text;
-                explanation.textContent = data.explanation;
-            } catch (error) {
-                editedText.innerHTML = `<span class="error">خطا: ${error.message}</span>`;
-                explanation.innerHTML = "";
-                console.error("Edit error:", error);
-            }
+        return descriptions.get(self, "Unknown model")
+        
+    @property
+    def max_tokens(self) -> int:
+        limits = {
+            self.GPT35: 30000,
+            self.GPT4: 50000,
+            self.GEMINI: 1_000_000,
+            self.GEMINI2: 2000000
         }
+        return limits.get(self, 30000)  # Default to 30000 if unknown
 
-        // Handle text translation
-        async function translateText() {
-            const text = document.getElementById("editedText").textContent || document.getElementById("persianText").value;
-            const model = document.getElementById("model").value;
-            const result = document.getElementById("result");
-            
-            if (!text.trim()) {
-                result.innerHTML = '<span class="error">Please enter some text to translate</span>';
-                return;
-            }
-            
-            result.innerHTML = '<span class="loading">Translating...</span>';
-            
-            try {
-                const response = await fetch("/translate", {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json"
-                    },
-                    body: JSON.stringify({
-                        text: text,
-                        model: model
-                    })
-                });
-                
-                if (!response.ok) {
-                    const data = await response.json();
-                    throw new Error(data.detail || "Translation failed");
-                }
-                
-                const data = await response.json();
-                result.innerHTML = data.translated_text;
-            } catch (error) {
-                result.innerHTML = `<span class="error">❌ Error: ${error.message}</span>`;
-                console.error("Translation error:", error);
-            }
-        }
-    </script>
-</body>
-</html>
-''')
+class EditMode(str, Enum):
+    FAST = "fast"
+    DETAILED = "detailed"
 
 class EditRequest(BaseModel):
     text: str
-    mode: str  # "fast" or "detailed"
-    model: ModelType = ModelType.GPT35  # Default to GPT-3.5-turbo if not specified
+    model: str
+    mode: EditMode = EditMode.FAST
 
-class TranslationRequest(BaseModel):
-    text: str
-    model: ModelType
+class EditResponse(BaseModel):
+    edited_text: str
+    technical_explanation: str
 
-def get_system_prompt(mode: str, language: str) -> str:
-    return f"""You are an expert bilingual editor specializing in {language} professional development, coaching, and psychological content.
+# Map frontend model names to backend model types
+model_mapping = {
+    "models/gemini-1.5-pro-latest": ModelType.GEMINI2.value,
+    "models/gemini-1.5-flash-8b": ModelType.GEMINI.value,
+    "gpt-3.5-turbo": ModelType.GPT35.value,
+    "gpt-4": ModelType.GPT4.value,
+    "gemini-1.5-flash-8b": ModelType.GEMINI.value  # For translation section
+}
 
-EXPERTISE AREAS:
-1. Professional Terminology:
-   - Coaching and psychological terms
-   - Leadership development vocabulary
-   - Self-help and motivational language
-   - Technical accuracy in both languages
+def validate_word_count(original_text: str, edited_text: str, tolerance: int = 20) -> bool:
+    """Validate that the edited text's word count is within tolerance of the original."""
+    original_words = len(original_text.split())
+    edited_words = len(edited_text.split())
+    difference = abs(original_words - edited_words)
+    return difference <= tolerance
 
-2. Content Style:
-   - Professional yet engaging tone
-   - Clear and authoritative voice
-   - Appropriate formality level
-   - Cultural sensitivity
-
-3. Genre-Specific Knowledge:
-   - Self-help book standards
-   - Coaching methodology
-   - Psychological concepts
-   - Motivational writing
-
-MODE SPECIFICATIONS:
-For '{mode}' mode in {language}:
-- Fast Mode: 
-  • Basic grammar and spelling fixes
-  • Simple terminology corrections
-  • Fix punctuation and spacing
-  • Quick surface improvements
-  • Minimal technical adjustments
-
-- Detailed Mode:
-  • Precise professional terminology refinement
-  • Careful tone adjustment for coaching context
-  • Enhanced clarity without restructuring
-  • Professional language improvement
-  • Coaching terminology accuracy
-  • Cultural nuance preservation
-  • Technical term precision
-  • Maintain original message and structure
-  • Polish existing expressions
-  • Subtle improvements to flow
-
-LANGUAGE-SPECIFIC GUIDELINES:
-For Persian (فارسی):
-- حفظ لحن رسمی و حرفه‌ای
-- استفاده صحیح از اصطلاحات تخصصی کوچینگ
-- رعایت ساختار نگارشی متون روانشناسی
-- حفظ انسجام در ترجمه مفاهیم تخصصی
-
-For English:
-- Maintain professional coaching terminology
-- Ensure psychological concept accuracy
-- Preserve motivational impact
-- Balance technical and accessible language"""
-
-def get_edit_prompt(text: str, mode: str, language: str) -> str:
-    return f"""Edit this {language} professional development text in {mode} mode.
-
-EDITING GUIDELINES:
-1. Maintain subject matter expertise in:
-   - Coaching methodology
-   - Psychological concepts
-   - Professional development
-   - Leadership principles
-
-2. Ensure appropriate:
-   - Technical terminology
-   - Professional tone
-   - Concept clarity
-   - Engagement level
-
-3. Preserve:
-   - Core message integrity
-   - Professional credibility
-   - Motivational impact
-   - Cultural context
-
-Text to edit:
-{text}
-
-Return only the edited text without explanations."""
-
-def get_explanation_prompt(original_text: str, edited_text: str, language: str) -> str:
-    return f"""Provide a brief, bullet-point summary of key changes made to this {language} text:
-
-• Grammar & Style:
-  - List 1-2 major grammar/style improvements
-
-• Terminology:
-  - Note any professional term improvements
-
-• Tone & Impact:
-  - Mention key tone/impact enhancements
-
-Keep the explanation short and focused on the most important changes.
-
-Original Text:
-{original_text}
-
-Edited Text:
-{edited_text}
-
-Provide a concise bullet-point summary."""
-
-async def translate_with_openai(text: str, model: str) -> str:
+async def process_gemini_edit(text: str, mode: EditMode = EditMode.FAST) -> str:
+    """Process text editing using Gemini API."""
     try:
-        if not OPENAI_API_KEY:
-            raise Exception("OpenAI API key is missing")
+        logger.info("Starting Gemini edit process")
+        model = get_gemini_model()
+        
+        # Simplified prompt for faster processing
+        prompt = f"""شما یک ویراستار متخصص متون کوچینگ هستید. متن زیر را با حفظ ساختار و تعداد کلمات (حداکثر ۲۰ کلمه تفاوت) ویرایش کنید.
+        
+        نکات مهم:
+        ۱. عناوین و سرفصل‌ها را دقیقاً حفظ کنید
+        ۲. پاراگراف‌بندی را حفظ کنید
+        ۳. تعداد کلمات را حفظ کنید
+        ۴. فقط اصلاحات ضروری را انجام دهید
+        
+        متن برای ویرایش:
+        {text}
+        
+        متن ویرایش شده:"""
+        
+        max_attempts = 2  # Reduced from 3 to 2 attempts
+        for attempt in range(max_attempts):
+            try:
+                response = model.generate_content(prompt)  # Removed timeout
+                
+                if not response or not response.text:
+                    logger.warning(f"Empty response on attempt {attempt + 1}")
+                    continue
+                    
+                edited_text = response.text.strip()
+                
+                # Validate word count
+                if validate_word_count(text, edited_text):
+                    return edited_text
+                else:
+                    logger.warning(f"Word count validation failed on attempt {attempt + 1}")
+                    
+            except Exception as e:
+                logger.error(f"Error on attempt {attempt + 1}: {str(e)}")
+                continue
+                
+        logger.warning("All attempts failed, returning original text")
+        return text
             
-        temperature = 0.1  # Very low temperature for exact translations
-
-        system_prompt = """You are an expert translator specializing in professional development, coaching, and psychological content. 
-
-IMPORTANT: This is a direct translation task. Focus on:
-- Exact meaning preservation
-- Precise terminology mapping
-- Professional coaching and psychological terms
-- No creative variations or generations
-- Maintain source text structure when possible"""
-
-        user_prompt = f"""Translate this text while maintaining exact meaning and terminology:
-1. Use precise professional/coaching terms
-2. Maintain source text structure
-3. Preserve exact concepts
-4. Keep cultural context
-5. No creative additions
-
-Text to translate:
-{text}
-
-Provide only the direct translation."""
-
-        headers = {
-            "Authorization": f"Bearer {OPENAI_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        
-        data = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            "temperature": temperature
-        }
-        
-        response = requests.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers=headers,
-            json=data
-        )
-        response.raise_for_status()
-        result = response.json()
-        return result["choices"][0]["message"]["content"].strip()
-        
     except Exception as e:
-        logger.error(f"OpenAI translation error: {str(e)}")
-        raise Exception(f"OpenAI translation failed: {str(e)}")
+        logger.error(f"Gemini edit error: {str(e)}")
+        return text
 
-async def translate_with_claude(text: str) -> str:
-    try:
-        if not ANTHROPIC_API_KEY:
-            raise Exception("Anthropic API key is missing")
-            
-        headers = {
-            "Content-Type": "application/json",
-            "anthropic-version": "2023-06-01",
-            "x-api-key": ANTHROPIC_API_KEY
-        }
+def chunk_text(text: str, max_chunk_size: int = 2000) -> List[str]:
+    """Split text into chunks while preserving paragraph structure."""
+    paragraphs = text.split('\n')
+    chunks = []
+    current_chunk = []
+    current_size = 0
+    
+    for paragraph in paragraphs:
+        # If adding this paragraph would exceed chunk size, save current chunk and start new one
+        if current_size + len(paragraph) > max_chunk_size and current_chunk:
+            chunks.append('\n'.join(current_chunk))
+            current_chunk = []
+            current_size = 0
         
-        data = {
-            "model": "claude-3-opus-20240229",
-            "max_tokens": 1024,
-            "temperature": 0.1,  # Very low for exact translations
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "You are a precise translator focusing on exact terminology and accurate translations. Maintain maximum accuracy and conciseness."
+        current_chunk.append(paragraph)
+        current_size += len(paragraph)
+    
+    # Add the last chunk if it exists
+    if current_chunk:
+        chunks.append('\n'.join(current_chunk))
+    
+    return chunks
+
+async def process_openai_edit(text: str, model: str = ModelType.GPT35.value, mode: EditMode = EditMode.FAST) -> str:
+    """Process text editing using OpenAI API with chunking for long texts."""
+    try:
+        logger.info(f"Starting OpenAI edit process with model: {model}")
+        client = get_async_openai_client()
+        
+        # Optimize chunk sizes for better performance
+        max_chunk_size = 1500 if model == "gpt-4" else 1000  # Even smaller chunks for faster processing
+        chunks = chunk_text(text, max_chunk_size)
+        logger.info(f"Split text into {len(chunks)} chunks")
+        
+        edited_chunks = []
+        for i, chunk in enumerate(chunks):
+            logger.info(f"Processing chunk {i+1}/{len(chunks)}")
+            try:
+                # Different prompts for fast vs detailed editing
+                if mode == EditMode.FAST:
+                    system_prompt = """شما یک ویراستار متخصص متون کوچینگ در یک انتشارات حرفه‌ای هستید. هدف شما بهبود کیفیت متن با حفظ معنی، محتوای اصلی و اصطلاحات تخصصی کوچینگ است.
+لطفاً متن را با رعایت موارد زیر ویرایش کنید:
+۱. اصلاح خطاهای دستوری و نقطه‌گذاری
+۲. حفظ و استفاده صحیح از اصطلاحات تخصصی کوچینگ
+۳. بهبود ساختار جملات و روانی متن
+۴. حفظ دقیق معنا و محتوای اصلی
+۵. رعایت اصول نگارش فارسی معیار
+۶. تأکید بر حفظ و تقویت لحن رسمی و حرفه‌ای
+۷. حفظ تمام پاراگراف‌ها و ساختار متن
+نکته مهم: تعداد کلمات متن ویرایش شده باید تقریباً برابر با متن اصلی باشد (حداکثر ۲۰ کلمه کمتر یا بیشتر).
+توجه: فقط ویرایش متن فارسی، بدون ترجمه."""
+                else:
+                    system_prompt = """شما یک ویراستار متخصص متون کوچینگ در یک انتشارات حرفه‌ای هستید. هدف شما بهبود کیفیت متن با حفظ معنی، محتوای اصلی و اصطلاحات تخصصی کوچینگ است.
+لطفاً متن را با دقت و با رعایت موارد زیر ویرایش کنید:
+۱. اصلاح تمام خطاهای دستوری، املایی و نقطه‌گذاری
+۲. حفظ و کاربرد دقیق اصطلاحات تخصصی کوچینگ
+۳. بهبود ساختار جملات، وضوح و خوانایی متن
+۴. ارتقای سطح نگارش و حرفه‌ای‌تر کردن متن
+۵. حفظ دقیق معنا و محتوای اصلی
+۶. رعایت اصول نگارش فارسی معیار و زبان رسمی
+۷. تأکید ویژه بر حفظ و تقویت لحن رسمی و کاملاً حرفه‌ای
+۸. حفظ تمام پاراگراف‌ها و ساختار متن
+نکته مهم: تعداد کلمات متن ویرایش شده باید تقریباً برابر با متن اصلی باشد (حداکثر ۲۰ کلمه کمتر یا بیشتر).
+توجه: فقط ویرایش متن فارسی، بدون ترجمه."""
+
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"""لطفاً این متن کوچینگ (بخش {i+1}/{len(chunks)}) را با حفظ معنا، محتوا و اصطلاحات تخصصی آن ویرایش کنید.
+تعداد کلمات متن ویرایش شده باید تقریباً برابر با متن اصلی باشد.
+
+{chunk}
+
+نکته مهم: فقط ویرایش متن فارسی، بدون ترجمه."""}
+                ]
+                
+                max_attempts = 2  # Reduced from 3 to 2 attempts
+                for attempt in range(max_attempts):
+                    completion = await client.chat.completions.create(
+                        model=model,
+                        messages=messages,
+                        temperature=0.1,  # Lower temperature for faster, more consistent responses
+                        max_tokens=max_chunk_size,
+                        timeout=20.0,  # Further reduced timeout
+                        presence_penalty=-0.1,  # Slight penalty to prevent wordiness
+                        frequency_penalty=0.1,  # Slight penalty to prevent repetition
+                    )
+                    
+                    if not completion or not completion.choices:
+                        logger.error(f"Empty response from OpenAI for chunk {i+1} on attempt {attempt + 1}")
+                        continue
+                    
+                    edited_chunk = completion.choices[0].message.content.strip()
+                    
+                    # Validate word count for this chunk
+                    if validate_word_count(chunk, edited_chunk):
+                        edited_chunks.append(edited_chunk)
+                        break
+                    else:
+                        logger.warning(f"Word count validation failed for chunk {i+1} on attempt {attempt + 1}")
+                        
+                    if attempt == max_attempts - 1:
+                        logger.warning(f"All attempts failed for chunk {i+1}, using original chunk")
+                        edited_chunks.append(chunk)
+                
+            except Exception as e:
+                logger.error(f"Error processing chunk {i+1}: {str(e)}")
+                edited_chunks.append(chunk)  # Keep original chunk if processing fails
+                continue
+        
+        # Combine edited chunks with proper spacing
+        return '\n\n'.join(edited_chunks)
+            
+    except Exception as e:
+        logger.error(f"OpenAI edit error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Edit failed: {str(e)}")
+
+@app.post("/edit")
+async def edit_text(request: EditRequest) -> EditResponse:
+    """Edit Persian text for improved clarity and formality."""
+    try:
+        text = request.text.strip()
+        model_type = model_mapping.get(request.model)
+        mode = request.mode
+        
+        if not text:
+            raise HTTPException(status_code=400, detail="Text cannot be empty")
+            
+        if not model_type:
+            raise HTTPException(status_code=400, detail=f"Invalid model type: {request.model}")
+            
+        # Add length validation with more reasonable limits
+        max_length = 6000 if model_type == "gpt-4" else 4000  # Further reduced limits for faster processing
+        if len(text) > max_length:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Text too long (max {max_length} characters for {model_type})"
+            )
+            
+        try:
+            if model_type in [ModelType.GEMINI.value, ModelType.GEMINI2.value]:
+                edited = await process_gemini_edit(text, mode)
+            else:
+                edited = await process_openai_edit(text, model_type, mode)
+            
+            # Validate edited text
+            if not edited or not edited.strip():
+                raise Exception("Received empty response from API")
+            
+            # Create diff and ensure proper encoding
+            diff_html = create_diff_html(text, edited)
+            
+            # Ensure proper encoding of Persian text
+            return JSONResponse(
+                content={
+                    "edited_text": edited.strip(),
+                    "technical_explanation": f"✅ Used {request.model} for {mode.value} editing",
+                    "diff_html": diff_html,
+                    "model_used": model_type
                 },
-                {
-                    "role": "user",
-                    "content": f"Translate this Persian text to English with precise terminology and maximum accuracy: {text}"
+                headers={
+                    "Content-Type": "application/json; charset=utf-8",
+                    "Access-Control-Allow-Origin": "*"
                 }
-            ]
-        }
-        
-        response = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers=headers,
-            json=data
-        )
-        response.raise_for_status()
-        result = response.json()
-        return result["content"][0]["text"].strip()
-        
-    except Exception as e:
-        logger.error(f"Claude translation error: {str(e)}")
-        raise Exception(f"Claude translation failed: {str(e)}")
-
-async def translate_with_google_cloud(text: str) -> str:  # Renamed from translate_with_gemini
-    try:
-        logger.info("Starting Google Cloud Translation")
-        url = "https://translation.googleapis.com/language/translate/v2"
-        params = {
-            'q': text,
-            'target': 'en',
-            'source': 'fa',
-            'key': GOOGLE_API_KEY
-        }
-        response = requests.post(url, params=params)
-        response.raise_for_status()
-        result = response.json()
-        translation = result['data']['translations'][0]['translatedText'].strip()
-        logger.info(f"Google Cloud Translation successful: {translation}")
-        return translation
-    except Exception as e:
-        logger.error(f"Google Cloud Translation error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Google Cloud Translation failed: {str(e)}")
-
-async def translate_with_gemini(text: str) -> str:
-    try:
-        if not GEMINI_API_KEY:
-            raise Exception("Gemini API key is missing")
+            )
             
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        
-        generation_config = {
-            "temperature": 0.1  # Low temperature for accurate translation
-        }
-        
-        prompt = f"""You are an expert translator specializing in professional development and coaching content. 
-
-Task: Translate the following Persian text to English while maintaining:
-1. Professional coaching terminology
-2. Psychological concept accuracy
-3. Motivational impact
-4. Cultural context
-5. Professional tone
-
-Focus on EXACT translation with precise terminology matching. This is a translation task, not text generation.
-
-Text to translate:
-{text}
-
-Provide only the direct translation, maintaining exact meaning."""
-        
-        response = model.generate_content(
-            prompt,
-            generation_config=generation_config
-        )
-        
-        if not hasattr(response, 'text'):
-            raise Exception("No response from Gemini")
+        except Exception as e:
+            logger.error(f"API processing error: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to process text with {request.model}: {str(e)}"
+            )
             
-        return response.text.strip()
-        
+    except HTTPException as e:
+        raise e
     except Exception as e:
-        logger.error(f"Gemini translation error: {str(e)}")
-        raise Exception(f"Gemini translation failed: {str(e)}")
+        logger.error(f"Edit error: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unexpected error during text editing: {str(e)}"
+        )
 
-@app.get("/")
-async def root(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+def create_diff_html(original: str, edited: str) -> str:
+    """Create HTML with highlighted differences between original and edited text."""
+    from difflib import SequenceMatcher
+    
+    def escape_html(text: str) -> str:
+        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    
+    matcher = SequenceMatcher(None, original, edited)
+    html = []
+    
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            # Keep unchanged text as is
+            html.append(escape_html(original[i1:i2]))
+        elif tag == "delete":
+            # Show deleted text with strikethrough and red color
+            html.append(f'<span class="delete">{escape_html(original[i1:i2])}</span>')
+        elif tag == "insert":
+            # Show new text in green
+            html.append(f'<span class="insert">{escape_html(edited[j1:j2])}</span>')
+        elif tag == "replace":
+            # Show both old (strikethrough) and new text side by side
+            html.append(f'<span class="delete">{escape_html(original[i1:i2])}</span>')
+            html.append('<span class="arrow">➜</span>')  # Add an arrow to show the change
+            html.append(f'<span class="insert">{escape_html(edited[j1:j2])}</span>')
+    
+    return "".join(html)
 
 @app.post("/translate")
-async def translate(request: TranslationRequest):
+async def translate_text(request: Request):
+    """Translate Persian text to English with support for long texts."""
     try:
-        logger.info(f"Attempting to translate text using {request.model}: {request.text}")
+        data = await request.json()
+        logger.info(f"Received translation request with data: {data}")
         
-        if request.model == ModelType.GPT35:
-            translated_text = await translate_with_openai(request.text, "gpt-3.5-turbo")
-        elif request.model == ModelType.GPT4:
-            translated_text = await translate_with_openai(request.text, "gpt-4")
-        elif request.model == ModelType.CLAUDE:
-            translated_text = await translate_with_claude(request.text)
-        elif request.model == ModelType.GOOGLE:
-            translated_text = await translate_with_google_cloud(request.text)
-        elif request.model == ModelType.GEMINI:
-            translated_text = await translate_with_gemini(request.text)
-        else:
-            raise HTTPException(status_code=400, detail="Invalid model specified")
+        text = data.get("text", "").strip()
+        model_type = data.get("model", "gpt-3.5-turbo")
+        
+        logger.info(f"Starting translation with model: {model_type}")
+        logger.info(f"Text length: {len(text)} characters")
+        
+        if not text:
+            logger.error("Empty text provided")
+            raise HTTPException(status_code=400, detail="No text provided")
             
-        logger.info(f"Translation successful with {request.model}")
-        return {"translated_text": translated_text}
+        # Validate model type
+        valid_models = ["gpt-3.5-turbo", "gpt-4", "gemini-pro"]
+        if model_type not in valid_models:
+            logger.error(f"Invalid model type: {model_type}. Valid models are: {valid_models}")
+            raise HTTPException(status_code=400, detail=f"Invalid model type: {model_type}")
         
+        # Process translation based on model
+        try:
+            if model_type in ["gpt-3.5-turbo", "gpt-4"]:
+                logger.info(f"Using OpenAI model: {model_type}")
+                try:
+                    client = get_async_openai_client()
+                    
+                    # Split text into chunks if needed
+                    max_chunk_size = 2500 if model_type == "gpt-4" else 1500  # Reduced chunk sizes for translation
+                    chunks = chunk_text(text, max_chunk_size)
+                    logger.info(f"Split text into {len(chunks)} chunks")
+                    
+                    translated_chunks = []
+                    for i, chunk in enumerate(chunks):
+                        logger.info(f"Translating chunk {i+1}/{len(chunks)}")
+                        completion = await client.chat.completions.create(
+                            model=model_type,
+                            messages=[
+                                {"role": "system", "content": "You are a Persian to English translator. Translate the following text to English accurately and naturally."},
+                                {"role": "user", "content": f"Translate this text (part {i+1}/{len(chunks)}):\n{chunk}"}
+                            ],
+                            temperature=0.3,
+                            max_tokens=max_chunk_size,
+                            timeout=60.0
+                        )
+                        
+                        if not completion or not completion.choices:
+                            logger.error(f"Empty response from OpenAI for chunk {i+1}")
+                            raise HTTPException(status_code=500, detail=f"Empty response from OpenAI API for chunk {i+1}")
+                        
+                        chunk_translation = completion.choices[0].message.content.strip()
+                        if not chunk_translation:
+                            logger.error(f"Empty translation from OpenAI for chunk {i+1}")
+                            raise HTTPException(status_code=500, detail=f"Empty translation from OpenAI for chunk {i+1}")
+                        
+                        translated_chunks.append(chunk_translation)
+                    
+                    translated_text = '\n\n'.join(translated_chunks)
+                    logger.info("Successfully completed all translations")
+                    
+                except openai.RateLimitError as e:
+                    logger.error(f"OpenAI rate limit error: {str(e)}")
+                    raise HTTPException(status_code=429, detail="Rate limit exceeded. Please try again later.")
+                except openai.APITimeoutError as e:
+                    logger.error(f"OpenAI timeout error: {str(e)}")
+                    raise HTTPException(status_code=504, detail="Translation request timed out")
+                except openai.APIError as e:
+                    logger.error(f"OpenAI API error: {str(e)}")
+                    raise HTTPException(status_code=500, detail=f"OpenAI API error: {str(e)}")
+                except Exception as e:
+                    logger.error(f"Unexpected error with OpenAI: {str(e)}")
+                    raise HTTPException(status_code=500, detail=f"Translation failed: {str(e)}")
+            
+            elif model_type == "gemini-pro":
+                logger.info("Using Gemini model")
+                try:
+                    model = get_gemini_model()
+                    prompt = f"""Translate this Persian text to English accurately and naturally:
+
+{text}
+
+Instructions:
+1. Maintain the original meaning and tone
+2. Use natural English expressions
+3. Keep any technical terms accurate
+4. Preserve formatting and paragraph structure"""
+
+                    response = model.generate_content(prompt)
+                    if not response or not response.text:
+                        logger.error("Empty response from Gemini API")
+                        raise HTTPException(status_code=500, detail="Empty response from Gemini API")
+                    translated_text = response.text.strip()
+                    logger.info("Successfully got translation from Gemini")
+                except Exception as e:
+                    logger.error(f"Gemini API error: {str(e)}")
+                    raise HTTPException(status_code=500, detail=f"Gemini API error: {str(e)}")
+            
+            else:
+                logger.error(f"Invalid model type: {model_type}")
+                raise HTTPException(status_code=400, detail=f"Invalid model type: {model_type}")
+
+            if not translated_text:
+                logger.error("Empty translation result")
+                raise HTTPException(status_code=500, detail="Empty translation result")
+
+            logger.info("Successfully completed translation")
+            return JSONResponse(
+                content={
+                    "translated_text": translated_text,
+                    "model_used": model_type
+                },
+                headers={
+                    "Content-Type": "application/json; charset=utf-8"
+                }
+            )
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Translation API error: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Translation failed: {str(e)}")
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Translation error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/edit")
-async def edit(request: EditRequest):
+@app.get("/")
+async def read_root(request: Request):
+    """Serve the main page."""
     try:
-        logger.info(f"Attempting to edit text in {request.mode} mode using {request.model}: {request.text}")
-        
-        # Detect language
-        language = "Persian" if any("\u0600" <= c <= "\u06FF" for c in request.text) else "English"
-        
-        system_prompt = get_system_prompt(request.mode, language)
-        user_prompt_edit = get_edit_prompt(request.text, request.mode, language)
-        user_prompt_explain = get_explanation_prompt(request.text, request.mode, language)
-        
-        if request.model in [ModelType.GPT35, ModelType.GPT4]:
-            if not OPENAI_API_KEY:
-                raise HTTPException(status_code=500, detail="OpenAI API key is missing")
-                
-            # Set temperature based on model and mode
-            if request.model == ModelType.GPT4:
-                # GPT-4 temperatures
-                if request.mode == "detailed":
-                    temperature = 0.4  # Higher for detailed editing to allow creative improvements
-                else:
-                    temperature = 0.2  # Lower for fast mode focusing on accuracy
-            else:
-                # GPT-3.5 temperatures
-                if request.mode == "detailed":
-                    temperature = 0.5  # Higher for detailed editing
-                else:
-                    temperature = 0.3  # Lower for fast mode
-
-            headers = {
-                "Authorization": f"Bearer {OPENAI_API_KEY}",
-                "Content-Type": "application/json"
-            }
-            
-            # First get the edited text
-            data = {
-                "model": request.model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt_edit}
-                ],
-                "temperature": temperature
-            }
-            
-            response = requests.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers=headers,
-                json=data
-            )
-            response.raise_for_status()
-            result = response.json()
-            edited_text = result["choices"][0]["message"]["content"].strip()
-            
-            # Then get the explanation
-            data["messages"][1]["content"] = user_prompt_explain + edited_text
-            response = requests.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers=headers,
-                json=data
-            )
-            response.raise_for_status()
-            result = response.json()
-            explanation = result["choices"][0]["message"]["content"].strip()
-            
-        elif request.model == ModelType.CLAUDE:
-            if not ANTHROPIC_API_KEY:
-                raise HTTPException(status_code=500, detail="Anthropic API key is missing")
-                
-            headers = {
-                "Content-Type": "application/json",
-                "anthropic-version": "2023-06-01",
-                "x-api-key": ANTHROPIC_API_KEY
-            }
-            
-            # First get the edited text
-            data = {
-                "model": "claude-3-opus-20240229",
-                "max_tokens": 1024,
-                "temperature": 0.4 if request.mode == "detailed" else 0.2,  # Adjust based on mode
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": system_prompt
-                    },
-                    {
-                        "role": "user",
-                        "content": user_prompt_edit
-                    }
-                ]
-            }
-            
-            response = requests.post(
-                "https://api.anthropic.com/v1/messages",
-                headers=headers,
-                json=data
-            )
-            response.raise_for_status()
-            result = response.json()
-            edited_text = result["content"][0]["text"].strip()
-            
-            # Then get the explanation
-            data["messages"][1]["content"] = user_prompt_explain + edited_text
-            response = requests.post(
-                "https://api.anthropic.com/v1/messages",
-                headers=headers,
-                json=data
-            )
-            response.raise_for_status()
-            result = response.json()
-            explanation = result["content"][0]["text"].strip()
-            
-        elif request.model == ModelType.GEMINI:
-            if not GEMINI_API_KEY:
-                raise HTTPException(status_code=500, detail="Gemini API key is missing")
-                
-            genai.configure(api_key=GEMINI_API_KEY)
-            model = genai.GenerativeModel('gemini-1.5-flash')
-            
-            generation_config = {
-                "temperature": 0.25 if request.mode == "detailed" else 0.2  # Very slight increase for detailed mode to allow minor refinements
-            }
-            
-            # First get the edited text
-            prompt = f"{system_prompt}\n\n{user_prompt_edit}"
-            response = model.generate_content(prompt)
-            
-            if not hasattr(response, 'text'):
-                raise Exception("No response from Gemini")
-            edited_text = response.text.strip()
-            
-            # Then get the explanation
-            prompt = f"{system_prompt}\n\n{user_prompt_explain}{edited_text}"
-            response = model.generate_content(prompt)
-            
-            if not hasattr(response, 'text'):
-                raise Exception("No explanation from Gemini")
-            explanation = response.text.strip()
-            
-        elif request.model == ModelType.GOOGLE:
-            if not GOOGLE_API_KEY:
-                raise HTTPException(status_code=500, detail="Google API key is missing")
-                
-            url = "https://translation.googleapis.com/language/translate/v2"
-            # First translate to English
-            params = {
-                'q': request.text,
-                'target': 'en',
-                'source': 'fa',
-                'key': GOOGLE_API_KEY
-            }
-            response = requests.post(url, params=params)
-            response.raise_for_status()
-            english = response.json()['data']['translations'][0]['translatedText']
-            
-            # Then back to Persian
-            params['q'] = english
-            params['target'] = 'fa'
-            params['source'] = 'en'
-            response = requests.post(url, params=params)
-            response.raise_for_status()
-            edited_text = response.json()['data']['translations'][0]['translatedText']
-            
-            # Generate a simple explanation
-            explanation = "Text was processed through translation to English and back to Persian for basic improvements."
-        
-        logger.info(f"Edit successful with {request.model}: {edited_text}")
-        logger.info(f"Explanation: {explanation}")
-        return {"edited_text": edited_text, "explanation": explanation}
-            
+        return templates.TemplateResponse("index.html", {
+            "request": request
+        })
     except Exception as e:
-        logger.error(f"Edit error: {str(e)}")
+        logger.error(f"Error serving index page: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-async def test_gemini_connection() -> bool:
-    try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content("Hello")
-        return hasattr(response, 'text')
-    except Exception as e:
-        logger.error(f"Error testing Gemini connection: {str(e)}")
-        return False
-
-# Add a route to test the connection
-@app.get("/test-gemini")
-async def test_gemini():
-    """Endpoint to test Gemini API connection"""
-    success = await test_gemini_connection()
-    if success:
-        return {"status": "success", "message": "Gemini API connection test passed"}
-    else:
-        raise HTTPException(status_code=500, detail="Gemini API connection test failed")
-
 if __name__ == "__main__":
-    import uvicorn
+    import signal
+    import sys
     import asyncio
     
-    # Test Gemini connection before starting the server
-    asyncio.run(test_gemini_connection())
+    def signal_handler(sig, frame):
+        logger.info("Received shutdown signal, cleaning up...")
+        sys.exit(0)
     
-    uvicorn.run(app, host="0.0.0.0", port=8088)
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    try:
+        # Initialize API clients
+        if not asyncio.run(initialize_api_clients()):
+            logger.error("Failed to initialize API clients. Exiting...")
+            sys.exit(1)
+        
+        # Try ports in a higher range
+        start_port = 9090
+        end_port = 9100
+        
+        def is_port_in_use(port):
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                return s.connect_ex(('localhost', port)) == 0
+                
+        for port in range(start_port, end_port):
+            if is_port_in_use(port):
+                logger.warning(f"Port {port} is already in use, trying next port...")
+                continue
+                
+            try:
+                logger.info(f"Starting server on port {port}")
+                uvicorn.run(
+                    "translation_bot:app",  # Pass as import string instead of app object
+                    host="0.0.0.0",
+                    port=port,
+                    reload=True,
+                    log_level="info",
+                    access_log=True,
+                    workers=1
+                )
+                break
+            except Exception as e:
+                logger.error(f"Failed to start server on port {port}: {str(e)}")
+                if port == end_port - 1:
+                    logger.error("No available ports found")
+                    raise
+                continue
+                
+    except Exception as e:
+        logger.error(f"Server startup failed: {str(e)}")
+        sys.exit(1) 

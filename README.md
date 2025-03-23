@@ -33,9 +33,9 @@ pip install -r requirements.txt
 4. Set up environment variables:
    - Copy `.env.example` to `.env`
    - Add your API keys to the `.env` file:
-     - OPENAI_API_KEY
-     - ANTHROPIC_API_KEY
-     - GOOGLE_API_KEY
+     - `OPENAI_API_KEY`
+     - `ANTHROPIC_API_KEY`
+     - `GOOGLE_API_KEY`
 
 5. Run the application:
 ```bash
