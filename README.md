@@ -32,16 +32,18 @@ PersianAI is a sophisticated publishing automation tool that learns from profess
    * Grammar and style refinement  
    * Title and structure preservation  
    * Word count validation (2400-2600 range)
+   * Technical explanation generation for editorial decisions
 * **Intelligent Translation System**  
    * High-quality Persian to English translation  
    * Context-aware terminology handling  
    * Multi-author consistency maintenance  
    * Professional publishing standards compliance
+   * Support for future multi-language expansion
 * **Advanced Automation Features**  
    * Real-time change tracking and visualization with detailed statistics  
-   * Fast and detailed editing modes  
+   * Fast and detailed editing modes with customizable parameters  
    * Multiple AI model support (GPT-4, GPT-3.5, Gemini Flash, Gemini Pro)  
-   * Batch processing capabilities
+   * Batch processing capabilities for high-volume workflows
 
 ## Technology Stack
 
@@ -50,18 +52,21 @@ PersianAI is a sophisticated publishing automation tool that learns from profess
    * Google Gemini models (Flash, Pro) for efficient translations
    * Dynamic model selection based on content needs
    * Real-time comparison of output quality
+   * Automatic fallback system for API failures
 
 * **Enhanced Text Processing**
-   * Advanced change tracking with visualization
-   * Word-level edit identification
-   * Formatting preservation system
-   * Content chunking for large document support
+   * Advanced change tracking with word-level identification
+   * Detailed visualization of replacements, insertions, and deletions
+   * Sophisticated formatting preservation system
+   * Smart content chunking for large document processing (20+ pages)
+   * Statistical change analysis with metrics for each type of edit
 
 * **Technical Architecture**
    * Secure API management system
-   * Enhanced configuration for different environments
-   * Robust error handling
+   * Enhanced configuration for development, testing, and production environments
+   * Robust error handling and graceful degradation
    * Comprehensive logging and performance monitoring
+   * Containerized deployment support via Procfile
 
 ## Performance Metrics
 
@@ -130,11 +135,15 @@ python translation_bot.py
 ## Usage
 
 1. Enter Persian text in the "Write Persian Text" section
-2. Click "Edit Text" to improve the text using AI
-3. Click "Finalize Edit" to move the text to the translation section
-4. Select a translation model (GPT-3.5, GPT-4, Gemini Flash, or Gemini Pro)
-5. Click "Translate" to get the English translation
-6. Review the detailed change tracking to see what was modified
+2. Choose editing mode:
+   * **Fast Mode**: Quick improvements focusing on grammar and basic structure
+   * **Detailed Mode**: Comprehensive edits with style enhancement and deeper content analysis
+3. Click "Edit Text" to improve the text using AI
+4. Review the generated technical explanations for editorial decisions
+5. Click "Finalize Edit" to move the text to the translation section
+6. Select a translation model (GPT-3.5, GPT-4, Gemini Flash, or Gemini Pro)
+7. Click "Translate" to get the English translation
+8. Review the detailed change tracking to see what was modified with statistics on each type of change
 
 ## Requirements
 
@@ -242,9 +251,12 @@ This comprehensive project progress log was developed by analyzing the complete 
 ### Current Status
 
 * All models (GPT-3.5, GPT-4, Gemini Flash, Gemini Pro) are operational
-* Word-by-word editing is implemented
-* Visual diff highlighting is working
+* Word-by-word editing is implemented with detailed change tracking
+* Visual diff highlighting is working with comprehensive change statistics
 * Security measures are in place
+* Batch processing for multiple documents is functional
+* Deployment configuration is ready for production environments
+* Technical explanation generation is working
 
 ### Known Limitations
 
