@@ -1,6 +1,8 @@
 # Environment variables
 .env
-!.env.template
+.env.*
+env_backup/
+**/env_backup/
 
 # Google Cloud credentials
 **/clean-linker-448906-b1-aad79b28692e.json
@@ -30,8 +32,8 @@ wheels/
 *.egg
 
 # Virtual Environment
+.venv/
 venv/
-venv_translate/
 ENV/
 
 # IDE
@@ -42,4 +44,22 @@ ENV/
 
 # OS
 .DS_Store
-Thumbs.db 
+Thumbs.db
+
+# Backup files
+backup/
+**/backup/
+
+# Logs
+*.log
+server.log
+
+# Temporary files
+~$*
+
+# Personal files
+order info/
+resume.tex
+
+# Google Cloud SDK
+google-cloud-sdk/ 
