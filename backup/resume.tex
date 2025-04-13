@@ -1,0 +1,273 @@
+%-------------------------
+% Resume in Latex
+% Based off of: https://github.com/sb2nov/resume
+% and Jake Gutierrez's version of it
+% at https://www.overleaf.com/latex/templates/jakes-resume/syzfjbzwjncs
+% inspired by https://practicaltypography.com/resumes.html
+% License : MIT
+%------------------------
+% Set Arial as the main font for 
+\documentclass[letterpaper,11pt]{article}
+\usepackage{fontspec}  % Load the fontspec package which is essential for specifying fonts in XeLaTeX and LuaLaTeX
+\setmainfont{Arial}    
+
+\usepackage{tikz}
+\usepackage{latexsym}
+\usepackage[empty]{fullpage}
+\usepackage{titlesec}
+\usepackage{marvosym}
+\usepackage[usenames, dvipsnames]{xcolor}
+\usepackage{verbatim}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage[english]{babel}
+\usepackage{tabularx}
+\usepackage{wrapfig}
+\usepackage{graphicx}
+\usepackage[margin = 0.5 in]{geometry}
+\usepackage{contour}
+\usepackage{ulem}
+\usepackage{fontawesome5}
+
+%--------------UNDERLINING---------------
+% taken from https://alexwlchan.net/2017/10/latex-underlines/
+
+\renewcommand{\ULdepth}{3.8pt}
+\contourlength{0.8pt}
+
+\newcommand{\myuline}[1]{%
+  \uline{\phantom{#1}}%
+  \llap{\contour{white}{#1}}%
+}
+
+%----------------------------------------
+
+\graphicspath{ {./Images/} }
+
+% Define a custom darker blue color
+\definecolor{custommediumblue}{RGB}{0, 102, 204} % Adjust the RGB values for a medium shade
+
+\pagestyle{fancy}
+\fancyhf{} % clear all header and footer fields
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+
+% Adjust margins
+\addtolength{\oddsidemargin}{-0.1in}
+\addtolength{\marginparsep}{0.1in}
+\addtolength{\evensidemargin}{-0.1in}
+\addtolength{\textwidth}{0.2in}
+\addtolength{\topmargin}{-0.1in}
+\addtolength{\textheight}{0.5in}
+
+\urlstyle{same}
+
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+% Sections formatting
+% Define the title for the section with added space
+ 
+% Ensure consistent titlespacing for all sections
+\titlespacing*{\section}{0pt}{6pt}{2pt}  % Left margin is 0pt
+
+% Ensure consistent section title format
+\titleformat{\section}{
+  \color{custommediumblue}\fontsize{12}{12}\selectfont\titlerule\vspace{0.5pt}
+  \vspace{1 pt}\raggedright\bfseries
+}{}{0pt}{}
+
+%-------------------------
+% Custom commands
+
+\newcommand{\resumeItem}[1]{
+  \item\small{
+    {#1 \vspace{-1pt}}
+  }
+}
+
+\newcommand{\resumeSubheading}[4]{
+  \vspace{-2pt}\item
+  \begin{tabular*}{0.97\textwidth}[t]{l@{\extracolsep{\fill}}r}
+    \textbf{#1} & #2 \\
+    \small#3 & \small#4 \\
+  \end{tabular*}\vspace{-3pt}
+}
+
+\newcommand{\resumeProjectHeading}[2]{
+    \item
+    \begin{tabular*}{0.97\textwidth}{l@{\extracolsep{\fill}}r}
+      \small#1 & #2 \\
+    \end{tabular*}\vspace{-7pt}
+}
+
+\newcommand{\resumeSubItem}[1]{\resumeItem{#1}\vspace{-4pt}}
+
+\renewcommand\labelitemii{$\vcenter{\hbox{\tiny$\bullet$}}$}
+
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0.15in, label={}]}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}}
+\newcommand{\resumeItemListStart}{\begin{itemize}[leftmargin=0.15in, label= • , topsep=2pt, itemsep=1pt, partopsep=0pt]}
+\newcommand{\resumeItemListEnd}{\end{itemize}\vspace{-5pt}}
+
+%-------------------------------------------
+%%%%%%  RESUME STARTS HERE  %%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\begin{document}
+
+% ----------HEADING----------
+{
+    \color{custommediumblue}\large\fontsize{20pt}{20pt}\selectfont\bfseries\raggedright Hamideh Shahrabi 
+    
+    }
+    
+    \href{mailto:shahrabh@mcmaster.ca}{
+        \faEnvelope
+        \thinspace \thinspace
+        \myuline{Hamideh.shahrabi88@gmail.com}} $|$
+    \faPhone
+    \thinspace \thinspace
+    289-639-7574 $|$
+    \href{https://www.linkedin.com/in/hamideh-shahrabi-75345553}{
+        \faLinkedin
+        \thinspace \thinspace        
+        \myuline{LinkedIn}} $|$
+    \href{https://github.com/hamideshahrabi/}{
+        \faGithub
+       \thinspace \thinspace
+        \myuline{GitHub}}
+
+%----------- Professional Summary -----------
+\section{\textcolor{custommediumblue}{Professional Summary}}
+\begin{itemize}[leftmargin=0.15in, label= • , topsep=-5pt, itemsep=0pt, partopsep=0pt]
+   \small{
+
+    Machine Learning Engineer with 5+ years of experience delivering end-to-end AI and data science solutions, including predictive modeling, statistical analysis, and large language model (LLM) development. Proficient in Python and SQL, with experience fine-tuning LLMs, crafting effective prompts, and building intelligent NLP systems such as summarization and question answering. Skilled in deploying models using GCP, Docker, and Kubernetes, and familiar with retrieval-augmented generation (RAG). Passionate about building responsible, high-impact AI applications that translate complex research into real-world value.
+
+
+   }
+\end{itemize}
+
+%-----------Technical Skills-----------
+\section{\textcolor{custommediumblue}{Technical Skills}}
+\resumeSubHeadingListStart
+\begin{itemize}[leftmargin=0.15in, label= • , topsep=-5pt, itemsep=0pt, partopsep=0pt]
+    \small{
+    \item\textbf{Programming Languages:} Python, SQL
+    
+    \item\textbf{ML \& Deep Learning:} Transformers, fine-tuning, prompt engineering, TensorFlow, PyTorch, Keras, scikit-learn, XGBoost
+    
+    \item\textbf{LLM Tools:} GPT-3.5, GPT-4, Gemini, Gemini Pro, Claude, Flan-T5, LangChain, RAG, LlamaIndex, Hugging Face Transformers
+    
+    \item\textbf{Statistical \& Quantitative Techniques:} Regression models, A/B testing, model evaluation (RMSE, precision/recall), hypothesis testing
+    
+    \item\textbf{Data Processing:} Pandas, NumPy, ETL pipelines, Apache Spark
+    
+    \item\textbf{Cloud Platforms:} AWS (SageMaker, EC2, S3, Bedrock), GCP (Vertex AI, BigQuery), Azure, Databricks
+    
+    \item\textbf{Infrastructure \& DevOps:} CI/CD pipelines, REST API development, Docker, Kubernetes, Kubeflow, Git, MLflow
+    
+    \item\textbf{Visualization:} Plotly, Matplotlib, Seaborn
+    }
+\end{itemize}
+\resumeSubHeadingListEnd
+
+%-----------EXPERIENCE-----------
+\section{\textcolor{custommediumblue}{Professional Experience}}
+\resumeSubHeadingListStart
+
+\resumeSubheading
+{Machine Learning Engineer}{Nov. 2024 -- Present}
+{McMaster University, Hamilton, Canada}{}
+\resumeItemListStart
+
+\resumeItem{Enabled editorial teams to reduce content review time by 50\% by developing a custom LLM-powered assistant, streamlining editing and translation workflows for faster publishing.}
+
+\resumeItem{Developed a full-stack LLM-powered editor (GPT-3.5, GPT-4, Gemini Pro) from scratch, streamlining content workflows — source code and demo available on GitHub.}
+\resumeItem{Fine-tuned LLMs on domain-specific datasets, boosting output accuracy by 40\% and reducing repetitive manual cycles.}
+\resumeItem{Engineered adaptive prompt templates with role-based conditioning and smart token-efficient routing to support agentic AI use cases.}
+\resumeItem{Designed and deployed an LLM-powered assistant for real-time editing and translation support, reducing manual intervention by 50\% and improving user-facing content workflows.}
+\resumeItem{Developed a custom user interface for an LLM-powered editing platform, enabling live side-by-side comparisons and improving user interaction through intuitive design.}
+\resumeItem{Collaborated closely with business partners and external stakeholders, translating technical goals into tailored LLM solutions for content creation workflows.}
+\resumeItemListEnd
+
+\resumeSubheading
+{Machine Learning Engineer}{Dec. 2023 -- Oct. 2024}
+{Electrical Power Engineers (EPE), Toronto, Canada}{}
+\resumeItemListStart
+\resumeItem{Automated over 70\% of user queries with a custom-built chatbot, freeing up manual support resources and improving customer response time significantly.}
+    
+\resumeItem{Built and deployed an AI chatbot using GPT-3.5 and Flan-T5 to handle user queries, automating repetitive communication tasks.}
+\resumeItem{Transformed static data into dynamic dashboards using Plotly, supporting faster insight generation.}
+%\resumeItem{Integrated models with RESTful APIs and deployed using CI/CD pipelines on AWS and GCP.}
+
+ \resumeItem{ Deployed scalable ML solutions in cloud environments (AWS/GCP) using Docker and Kubernetes for containerization and orchestration.}
+\resumeItem{Served as a technical liaison during collaborative sessions with cross-functional teams and end users, ensuring ML outputs aligned with business needs in a consultative capacity.}
+\resumeItem{Led technical discussions and provided mentorship to junior contributors during chatbot development and model integration efforts.}
+\resumeItemListEnd
+
+\resumeSubheading
+{Data Scientist}{Jul. 2021 -- Nov. 2023}
+{Tejarat Gostar}{}
+\resumeItemListStart
+\resumeItem{Improved product recommendation accuracy and boosted customer retention by 15\% through predictive modeling and user behavior segmentation.}
+\resumeItem{Reduced data processing time by 30\% through SQL query optimization.}
+%\resumeItem{Developed and deployed ML models for customer behavior modeling and demand forecasting.}
+\resumeItem{Delivered automated reporting tools to track performance metrics and drive decision-making.}
+\resumeItem{Worked cross-functionally to translate analytics into actionable product insights.}
+\resumeItem{Analyzed product and user data to support predictive modeling and improve business decision-making.}
+%\resumeItem{Performed statistical tests (e.g., hypothesis testing, confidence intervals) to support data-driven decisions across departments.}
+\resumeItemListEnd
+
+\resumeSubheading
+{Software Engineer}{Apr. 2020 -- Apr. 2021}
+{MojeNovin}{}
+\resumeItemListStart
+\resumeItem{Designed RESTful APIs using FastAPI and built full-stack applications to support editorial teams.}
+\resumeItem{Enhanced MySQL performance by 25\% through schema optimization and indexing.}
+\resumeItem{Developed responsive web interfaces, increasing front-end usability and user engagement.}
+\resumeItem{Used Git and GitHub for collaborative version control and CI integration.}
+\resumeItem{Built internal dashboards to streamline team operations and increase delivery speed.}
+\resumeItemListEnd
+
+\resumeSubHeadingListEnd
+
+%-----------EDUCATION-----------
+\section{\textcolor{custommediumblue}{Education}}
+\resumeSubHeadingListStart
+
+\resumeSubheading
+{Master of Engineering, Systems and Technology Engineering}{2023 -- 2024}
+{McMaster University, Hamilton, Canada}{}
+
+\resumeSubheading
+{Master of Engineering, Computer Engineering}{}
+{Shahid Beheshti University}{}
+
+\resumeSubheading
+{Bachelor of Science, Computer Engineering}{}
+{Islamic Azad University}{}
+
+\resumeSubHeadingListEnd
+
+%-----------CERTIFICATIONS-----------
+\section{\textcolor{custommediumblue}{Licenses \& Certifications}}
+\resumeSubHeadingListStart
+\begin{itemize}[leftmargin=0.15in, label= • , topsep=-5pt, itemsep=0pt, partopsep=0pt]
+    \small{
+    % AI/ML Certificates
+    \item \textbf{AWS Educate} - Introduction to Generative Artificial Intelligence (Mar. 2024)
+    \item \textbf{The Linux Foundation} - PyTorch and Deep Learning for Decision Makers (LFS116) (Feb. 2024)
+    
+    % DevOps/Infrastructure Certificates
+    \item \textbf{The Linux Foundation} - Introduction to Kubernetes (LFS158) (Jan. 2024)
+    \item \textbf{LinkedIn Learning} - Learning GitHub Actions (Jan. 2024)
+    \item \textbf{LinkedIn Learning} - Continuous Integration and Continuous Delivery with GitLab (Dec. 2023)
+    \item \textbf{LinkedIn Learning} - Learning GitLab (Dec. 2023)
+    }
+\end{itemize}
+\resumeSubHeadingListEnd
+
+\end{document} 
