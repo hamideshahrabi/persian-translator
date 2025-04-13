@@ -34,6 +34,7 @@ wheels/
 # Virtual Environment
 .venv/
 venv/
+venv_translate/
 ENV/
 
 # IDE
