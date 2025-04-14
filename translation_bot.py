@@ -1094,6 +1094,10 @@ async def read_root(request: Request):
         logger.error(f"Error serving index page: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/healthz")
+async def health_check():
+    return {"status": "healthy"}
+
 if __name__ == "__main__":
     import signal
     import sys
