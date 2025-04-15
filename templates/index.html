@@ -515,6 +515,7 @@
         // Handle text translation
         async function translateText() {
             const text = document.getElementById("persianText").value.trim();
+            const editedText = document.getElementById("editedText").textContent.trim();
             const model = document.getElementById("modelSelect").value;
             const result = document.getElementById("result");
             
@@ -533,6 +534,7 @@
                     },
                     body: JSON.stringify({
                         text: text,
+                        edited_text: editedText || null,
                         model: model
                     })
                 });

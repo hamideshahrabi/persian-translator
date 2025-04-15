@@ -869,21 +869,19 @@ def create_diff_html(original: str, edited: str) -> str:
 
 @app.post("/translate")
 async def translate_text(request: Request):
-    """Translate Persian text to English with support for long texts."""
     try:
         data = await request.json()
-        logger.info(f"Received translation request with data: {data}")
-        
-        text = data.get("text", "").strip()
+        # Use 'edited_text' if present, otherwise fall back to 'text'
+        text = data.get("edited_text") or data.get("text", "").strip()
         model_type = data.get("model", "gpt-3.5-turbo")
-        
-        logger.info(f"Starting translation with model: {model_type}")
+
+        logger.info(f"Received translation request with data: {data}")
         logger.info(f"Text length: {len(text)} characters")
-        
+
         if not text:
             logger.error("Empty text provided")
             raise HTTPException(status_code=400, detail="No text provided")
-            
+
         # Validate model type
         valid_models = ["gpt-3.5-turbo", "gpt-4", "models/gemini-1.5-pro-latest", "models/gemini-1.5-flash-8b"]
         if model_type not in valid_models:
