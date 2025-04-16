@@ -869,19 +869,22 @@ def create_diff_html(original: str, edited: str) -> str:
 
 @app.post("/translate")
 async def translate_text(request: Request):
+    """Translate Persian text to English with support for long texts."""
     try:
         data = await request.json()
-        # Use 'edited_text' if present, otherwise fall back to 'text'
+        logger.info(f"Received translation request with data: {data}")
+        
+        # Use edited_text if present, otherwise fall back to text
         text = data.get("edited_text") or data.get("text", "").strip()
         model_type = data.get("model", "gpt-3.5-turbo")
-
-        logger.info(f"Received translation request with data: {data}")
+        
+        logger.info(f"Starting translation with model: {model_type}")
         logger.info(f"Text length: {len(text)} characters")
-
+        
         if not text:
             logger.error("Empty text provided")
             raise HTTPException(status_code=400, detail="No text provided")
-
+            
         # Validate model type
         valid_models = ["gpt-3.5-turbo", "gpt-4", "models/gemini-1.5-pro-latest", "models/gemini-1.5-flash-8b"]
         if model_type not in valid_models:
@@ -908,13 +911,11 @@ async def translate_text(request: Request):
                                 model=model_type,
                                 messages=[
                                     {"role": "system", "content": """You are a Persian to English translator. Your task is to translate the text while:
-1. Providing the translation as a single continuous paragraph
-2. Not adding any line breaks or paragraph breaks
-3. Using spaces between sentences
-4. Translating the content accurately and naturally
-5. Not preserving original formatting - everything should be in one flowing paragraph"""},
-                                    {"role": "user", "content": f"""Translate this text (part {i+1}/{len(chunks)}) to English. 
-IMPORTANT: Provide the translation as a single continuous paragraph without any line breaks.
+1. Maintaining the original text structure and formatting
+2. Preserving paragraph breaks and line breaks
+3. Translating the content accurately and naturally
+4. Keeping the same formatting as the input text"""},
+                                    {"role": "user", "content": f"""Translate this text (part {i+1}/{len(chunks)}) to English:
 
 {chunk}"""}
                                 ],
@@ -938,42 +939,18 @@ IMPORTANT: Provide the translation as a single continuous paragraph without any 
                             logger.error(f"Error translating chunk {i+1}: {str(chunk_error)}")
                             raise HTTPException(status_code=500, detail=f"Error translating chunk {i+1}: {str(chunk_error)}")
                     
-                    # Combine translated chunks into a single continuous paragraph
+                    # Combine translated chunks while preserving formatting
                     translated_text = ''
                     for chunk in translated_chunks:
-                        chunk = chunk.strip()
-                        if chunk:
-                            # Remove any line breaks and extra spaces
-                            chunk = chunk.replace('\n', ' ')
-                            chunk = re.sub(r'\s+', ' ', chunk)
-                            if translated_text:
-                                translated_text += ' '
-                            translated_text += chunk
+                        if translated_text:
+                            translated_text += '\n\n'
+                        translated_text += chunk.strip()
                     
-                    # Clean up any extra spaces and ensure single paragraph
-                    translated_text = re.sub(r'\s+', ' ', translated_text)
-                    translated_text = translated_text.strip()
-                    
-                    # Ensure no line breaks remain
-                    translated_text = translated_text.replace('\n', ' ')
-                    translated_text = re.sub(r'\s+', ' ', translated_text)
-                    translated_text = translated_text.strip()
-                    
-                    # Add paragraph spacing based on original text structure
-                    original_paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
-                    translated_paragraphs = []
-                    current_pos = 0
-                    
-                    for orig_para in original_paragraphs:
-                        # Find the corresponding translated text for this paragraph
-                        orig_words = len(orig_para.split())
-                        translated_words = translated_text.split()[current_pos:current_pos + orig_words]
-                        translated_paragraphs.append(' '.join(translated_words))
-                        current_pos += orig_words
-                    
-                    # Join paragraphs with double newlines
-                    translated_text = '\n\n'.join(translated_paragraphs)
-                    
+                    return JSONResponse(content={
+                        "translated_text": translated_text,
+                        "model_used": model_type
+                    })
+
                 except openai.RateLimitError as e:
                     logger.error(f"OpenAI rate limit error: {str(e)}")
                     raise HTTPException(status_code=429, detail="Rate limit exceeded. Please try again later.")

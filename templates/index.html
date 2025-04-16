@@ -518,11 +518,16 @@
             const editedText = document.getElementById("editedText").textContent.trim();
             const model = document.getElementById("modelSelect").value;
             const result = document.getElementById("result");
+            const translateButton = document.getElementById("translateButton");
             
             if (!text) {
                 result.innerHTML = '<div class="error">❌ Please enter some text to translate</div>';
                 return;
             }
+            
+            // Disable the translate button to prevent duplicate requests
+            translateButton.disabled = true;
+            translateButton.textContent = "Translating...";
             
             result.innerHTML = '<div class="loading">⏳ Translating...</div>';
             
@@ -558,6 +563,10 @@
             } catch (error) {
                 result.innerHTML = `<div class="error">❌ Error: ${error.message}</div>`;
                 console.error("Translation error:", error);
+            } finally {
+                // Re-enable the translate button
+                translateButton.disabled = false;
+                translateButton.textContent = "Translate";
             }
         }
 
