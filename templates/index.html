@@ -694,53 +694,71 @@
             errorElement.style.display = 'block';
         }
 
-        async function exportToWord() {
-            const persianText = document.getElementById("persianText").value;
-            const editedText = document.getElementById("editedText").textContent;
-            const combinedView = document.getElementById("diffHtml").innerHTML;
+        // Function to export to Word
+        function exportToWord() {
+            const originalText = document.getElementById('originalText').innerText;
+            const editedText = document.getElementById('editedText').innerText;
+            const translatedText = document.getElementById('translatedText').innerText;
+            const paragraphComparison = document.getElementById('paragraphComparison');
             
-            if (!persianText.trim()) {
-                showError("Please enter some text to export");
-                return;
-            }
+            // Create a formatted HTML string for Word
+            let wordContent = `
+                <html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
+                <head>
+                    <meta charset="utf-8">
+                    <title>PersianAI Translation Export</title>
+                    <style>
+                        body { font-family: Arial, sans-serif; direction: rtl; }
+                        .section { margin-bottom: 20px; }
+                        .title { font-size: 16px; font-weight: bold; margin-bottom: 10px; }
+                        .content { margin-bottom: 15px; }
+                        .paragraph-comparison { margin-bottom: 20px; border: 1px solid #eee; padding: 10px; }
+                        .original { background-color: #f8f9fa; padding: 10px; margin-bottom: 10px; }
+                        .edited { background-color: #e8f5e9; padding: 10px; }
+                    </style>
+                </head>
+                <body>
+                    <div class="section">
+                        <div class="title">متن اصلی:</div>
+                        <div class="content">${originalText}</div>
+                    </div>
+                    <div class="section">
+                        <div class="title">متن ویرایش شده:</div>
+                        <div class="content">${editedText}</div>
+                    </div>
+                    <div class="section">
+                        <div class="title">متن ترجمه شده:</div>
+                        <div class="content">${translatedText}</div>
+                    </div>
+                    <div class="section">
+                        <div class="title">مقایسه پاراگراف به پاراگراف:</div>
+                        ${Array.from(paragraphComparison.children).map(container => {
+                            const original = container.querySelector('.original-paragraph').textContent;
+                            const edited = container.querySelector('.edited-paragraph').textContent;
+                            return `
+                                <div class="paragraph-comparison">
+                                    <div class="original">${original}</div>
+                                    <div class="edited">${edited}</div>
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                </body>
+                </html>
+            `;
             
-            const exportButton = document.getElementById("exportButton");
-            exportButton.disabled = true;
-            exportButton.textContent = "Exporting...";
+            // Create a Blob with the HTML content
+            const blob = new Blob([wordContent], { type: 'application/msword' });
             
-            try {
-                const response = await fetch("/export-word", {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                    },
-                    body: JSON.stringify({
-                        original_text: persianText,
-                        edited_text: editedText,
-                        combined_view: combinedView
-                    }),
-                });
-                
-                if (!response.ok) {
-                    throw new Error('Export failed');
-                }
-                
-                const blob = await response.blob();
-                const url = window.URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = 'persian_text.docx';
-                document.body.appendChild(a);
-                a.click();
-                window.URL.revokeObjectURL(url);
-                document.body.removeChild(a);
-                
-            } catch (error) {
-                showError("Export failed: " + error.message);
-            } finally {
-                exportButton.disabled = false;
-                exportButton.textContent = "Export to Word";
-            }
+            // Create download link
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = 'persian_translation.docx';
+            
+            // Trigger download
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
         }
     </script>
 </body>
