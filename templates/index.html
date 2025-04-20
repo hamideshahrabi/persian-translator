@@ -234,22 +234,49 @@
             background-color: lightblue;
         }
         .delete {
+            color: #ff0000 !important;
             background-color: #ffebee;
             text-decoration: line-through;
-            color: #d32f2f;
-            padding: 0 2px;
-            margin: 0 2px;
+            padding: 0.2em 0.4em;
+            border-radius: 3px;
+            display: inline !important;
+            white-space: normal !important;
+            word-wrap: break-word;
+            word-break: keep-all;
+            min-width: 4px;
+            min-height: 1em;
+            vertical-align: baseline;
+            font-weight: normal;
+            opacity: 1 !important;
+            visibility: visible !important;
+            position: relative;
+            z-index: 1;
+            margin: 0 1px;
         }
         .insert {
+            color: #008000;
             background-color: #e8f5e9;
-            color: #2e7d32;
-            padding: 0 2px;
-            margin: 0 2px;
+            padding: 0.2em 0.4em;
+            border-radius: 3px;
+            display: inline !important;
+            white-space: normal !important;
+            word-wrap: break-word;
+            word-break: keep-all;
+            margin: 0 1px;
         }
         .arrow {
             color: #666;
-            margin: 0 5px;
-            font-size: 14px;
+            margin: 0 0.2em;
+            font-size: 0.9em;
+            display: inline !important;
+            white-space: normal !important;
+        }
+        .unchanged {
+            display: inline;
+            margin: 0 1px;
+            white-space: normal !important;
+            word-wrap: break-word;
+            word-break: keep-all;
         }
         #diffHtml {
             line-height: 2;
@@ -257,57 +284,37 @@
             border: 1px solid #e0e0e0;
             border-radius: 8px;
             margin-top: 20px;
-            white-space: normal;
+            white-space: normal !important;
             text-align: right;
             direction: rtl;
             font-family: 'Vazir', Tahoma, Arial;
             font-size: 16px;
         }
         .diff-container {
-            white-space: normal;
+            white-space: normal !important;
             word-wrap: break-word;
             font-family: inherit;
-            line-height: 1.3;
-            padding: 0.5em;
-        }
-        .diff-container p {
-            margin: 0.2em 0;
-            padding: 0;
-            text-align: justify;
-            display: inline;
-            min-height: 0.5em;
-            page-break-inside: avoid;
-        }
-        .diff-container p br {
-            display: none;
-        }
-        .diff-container h2 {
-            margin: 0.5em 0 0.2em 0;
-            padding: 0;
-            font-weight: bold;
-            font-size: 1.1em;
-            color: #333;
+            line-height: 2;
+            direction: rtl;
+            text-align: right;
+            padding: 1em;
             display: block;
-            page-break-after: avoid;
+            width: 100%;
         }
-        .delete {
-            text-decoration: line-through;
-            color: #ff0000;
-            background-color: #ffebee;
+        .text-content {
+            display: block;
+            white-space: normal !important;
+            word-wrap: break-word;
+            word-break: keep-all;
+        }
+        .word {
             display: inline;
-        }
-        .insert {
-            color: #008000;
-            background-color: #e8f5e9;
-            display: inline;
-        }
-        .arrow {
-            color: #666;
-            margin: 0 0.2em;
-            display: inline-block;
+            margin: 0 0.1em;
+            white-space: normal;
         }
         .paragraph-break {
-            display: none;
+            display: block;
+            margin: 1em 0;
         }
         .edited-text {
             line-height: 2;
@@ -326,6 +333,17 @@
             color: #666;
             font-size: 14px;
             text-align: right;
+        }
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin: 10px 0;
+            justify-content: center;
+        }
+        
+        .button-group button {
+            flex: 1;
+            max-width: 200px;
         }
     </style>
 </head>
@@ -353,7 +371,10 @@
             </div>
             <textarea id="persianText" dir="rtl" placeholder="Enter your Persian text here..."></textarea>
             <div id="editWordCountInfo" class="word-count-info"></div>
-            <button onclick="editText()">Edit Text</button>
+            <div class="button-group">
+                <button id="editButton" onclick="editText()">Edit Text</button>
+                <button id="exportButton" onclick="exportToWord()">Export to Word</button>
+            </div>
             <div id="editLoading" class="loading" style="display: none;">Processing</div>
             <div id="editError" class="error" style="display: none;"></div>
 
@@ -368,6 +389,10 @@
                         <div class="result-title">Edited Text (Used for Translation)</div>
                         <div id="editedText" class="edited-text" dir="rtl" style="background-color: #f8f9fa;"></div>
                     </div>
+                </div>
+                <div style="margin-top: 20px;">
+                    <div class="result-title">Paragraph-by-Paragraph Comparison</div>
+                    <div id="paragraphComparison" class="edited-text" dir="rtl" style="background-color: #f8f9fa;"></div>
                 </div>
                 <div style="margin-top: 20px;">
                     <div class="result-title">Combined View with Changes</div>
@@ -388,6 +413,8 @@
                 <div id="modelInfo" class="model-info"></div>
             </div>
             <button onclick="translateText()" id="translateButton">Translate</button>
+            <div id="translationLoading" class="loading" style="display: none;">Translating</div>
+            <div id="translationError" class="error" style="display: none;"></div>
             <div id="result"></div>
         </div>
 
@@ -507,6 +534,81 @@
                     const editedTextDiv = document.getElementById('editedText');
                     editedTextDiv.textContent = result.edited_text;
                     
+                    // Create paragraph-by-paragraph comparison
+                    const paragraphComparisonDiv = document.getElementById('paragraphComparison');
+                    paragraphComparisonDiv.innerHTML = '';
+                    
+                    // Function to split text into smaller chunks
+                    function splitIntoChunks(text, maxLength = 400) {
+                        const sentences = text.split(/[.!?]+/).filter(s => s.trim());
+                        const chunks = [];
+                        let currentChunk = '';
+                        
+                        sentences.forEach(sentence => {
+                            if ((currentChunk + sentence).length <= maxLength) {
+                                currentChunk += sentence + '. ';
+                            } else {
+                                if (currentChunk) chunks.push(currentChunk.trim());
+                                currentChunk = sentence + '. ';
+                            }
+                        });
+                        
+                        if (currentChunk) chunks.push(currentChunk.trim());
+                        return chunks;
+                    }
+                    
+                    // Split both texts into smaller chunks
+                    const originalChunks = splitIntoChunks(text);
+                    const editedChunks = splitIntoChunks(result.edited_text);
+                    
+                    // Create comparison for each chunk
+                    for (let i = 0; i < originalChunks.length; i++) {
+                        const chunkContainer = document.createElement('div');
+                        chunkContainer.className = 'paragraph-comparison-container';
+                        chunkContainer.style.marginBottom = '30px';
+                        chunkContainer.style.padding = '20px';
+                        chunkContainer.style.border = '1px solid #eee';
+                        chunkContainer.style.borderRadius = '5px';
+                        
+                        // Original chunk
+                        const originalChunk = document.createElement('div');
+                        originalChunk.className = 'original-paragraph';
+                        originalChunk.style.backgroundColor = '#f8f9fa';
+                        originalChunk.style.padding = '20px';
+                        originalChunk.style.marginBottom = '20px';
+                        originalChunk.style.borderRadius = '5px';
+                        originalChunk.style.textAlign = 'right';
+                        originalChunk.style.direction = 'rtl';
+                        originalChunk.style.minHeight = '200px';
+                        originalChunk.style.display = 'flex';
+                        originalChunk.style.alignItems = 'flex-start';
+                        originalChunk.style.lineHeight = '2.2';
+                        originalChunk.style.fontSize = '18px';
+                        originalChunk.textContent = originalChunks[i];
+                        
+                        // Edited chunk
+                        const editedChunk = document.createElement('div');
+                        editedChunk.className = 'edited-paragraph';
+                        editedChunk.style.backgroundColor = '#e8f5e9';
+                        editedChunk.style.padding = '20px';
+                        editedChunk.style.borderRadius = '5px';
+                        editedChunk.style.textAlign = 'right';
+                        editedChunk.style.direction = 'rtl';
+                        editedChunk.style.minHeight = '200px';
+                        editedChunk.style.display = 'flex';
+                        editedChunk.style.alignItems = 'flex-start';
+                        editedChunk.style.lineHeight = '2.2';
+                        editedChunk.style.fontSize = '18px';
+                        editedChunk.textContent = editedChunks[i] || originalChunks[i];
+                        
+                        // Add chunks to container
+                        chunkContainer.appendChild(originalChunk);
+                        chunkContainer.appendChild(editedChunk);
+                        
+                        // Add container to the comparison div
+                        paragraphComparisonDiv.appendChild(chunkContainer);
+                    }
+                    
                     // Display combined view with highlighted changes
                     document.getElementById('diffHtml').innerHTML = result.diff_html;
                     
@@ -533,6 +635,8 @@
             const editedText = document.getElementById("editedText").textContent;
             const model = document.getElementById("modelSelect").value;
             const translateButton = document.getElementById("translateButton");
+            const translationLoading = document.getElementById("translationLoading");
+            const translationError = document.getElementById("translationError");
             
             if (!persianText.trim()) {
                 showError("Please enter some text to translate");
@@ -541,21 +645,24 @@
             
             // Disable button and show loading state
             translateButton.disabled = true;
-            translateButton.textContent = "Translating...";
+            translationLoading.style.display = 'flex';
+            translationError.style.display = 'none';
             
-            fetch("/translate", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                },
-                body: JSON.stringify({
-                    text: persianText,
-                    edited_text: editedText,
-                    model: model
-                }),
-            })
-            .then(response => response.json())
-            .then(data => {
+            try {
+                const response = await fetch("/translate", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({
+                        text: persianText,
+                        edited_text: editedText,
+                        model: model
+                    }),
+                });
+                
+                const data = await response.json();
+                
                 if (data.error) {
                     showError(data.error);
                     return;
@@ -572,42 +679,68 @@
                 message += `ترجمه: <strong>${translatedWords}</strong> کلمه`;
                 
                 wordCountInfo.innerHTML = message;
-            })
-            .catch(error => {
+            } catch (error) {
                 showError("Translation failed: " + error.message);
-            })
-            .finally(() => {
-                // Re-enable button and restore text
+            } finally {
+                // Re-enable button and hide loading state
                 translateButton.disabled = false;
-                translateButton.textContent = "Translate";
-            });
-        }
-
-        // Helper function to highlight changes
-        function highlightChanges(text, changes) {
-            let highlightedText = text;
-            
-            changes.forEach(change => {
-                const { type, old, new: newText } = change;
-                
-                if (type === "punctuation") {
-                    highlightedText = highlightedText.replace(new RegExp(`\b${old}\b`, 'g'), `<span class="highlight-punctuation">${newText}</span>`);
-                } else if (type === "added") {
-                    highlightedText = highlightedText.replace(new RegExp(`\b${newText}\b`, 'g'), `<span class="highlight-added">${newText}</span>`);
-                } else if (type === "removed") {
-                    highlightedText = highlightedText.replace(new RegExp(`\b${old}\b`, 'g'), `<span class="highlight-removed">${old}</span>`);
-                } else if (type === "grammar") {
-                    highlightedText = highlightedText.replace(new RegExp(`\b${old}\b`, 'g'), `<span class="highlight-grammar">${newText}</span>`);
-                }
-            });
-            
-            return highlightedText;
+                translationLoading.style.display = 'none';
+            }
         }
 
         function showError(message) {
             const errorElement = document.getElementById('editError');
             errorElement.textContent = message;
             errorElement.style.display = 'block';
+        }
+
+        async function exportToWord() {
+            const persianText = document.getElementById("persianText").value;
+            const editedText = document.getElementById("editedText").textContent;
+            const combinedView = document.getElementById("diffHtml").innerHTML;
+            
+            if (!persianText.trim()) {
+                showError("Please enter some text to export");
+                return;
+            }
+            
+            const exportButton = document.getElementById("exportButton");
+            exportButton.disabled = true;
+            exportButton.textContent = "Exporting...";
+            
+            try {
+                const response = await fetch("/export-word", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({
+                        original_text: persianText,
+                        edited_text: editedText,
+                        combined_view: combinedView
+                    }),
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Export failed');
+                }
+                
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'persian_text.docx';
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
+                
+            } catch (error) {
+                showError("Export failed: " + error.message);
+            } finally {
+                exportButton.disabled = false;
+                exportButton.textContent = "Export to Word";
+            }
         }
     </script>
 </body>
