@@ -423,6 +423,17 @@
             <textarea id="translatedText" readonly></textarea>
             <div id="translationWordCountInfo" class="word-count-info"></div>
         </div>
+
+        <!-- Export to Word button -->
+        <div class="export-container" style="text-align: center; margin-top: 20px;">
+            <button onclick="exportToWord()" style="padding: 10px 20px;">Export to Word</button>
+        </div>
+
+        <!-- Explanation section -->
+        <div id="explanation" class="explanation-container" style="display: none;">
+            <h3>توضیحات:</h3>
+            <div class="explanation-content"></div>
+        </div>
     </div>
 
     <script>
@@ -698,13 +709,14 @@
             const persianText = document.getElementById("persianText").value;
             const editedText = document.getElementById("editedText").textContent;
             const combinedView = document.getElementById("diffHtml").innerHTML;
+            const translatedText = document.getElementById("translatedText").value;
             
             if (!persianText.trim()) {
                 showError("Please enter some text to export");
                 return;
             }
             
-            const exportButton = document.getElementById("exportButton");
+            const exportButton = document.querySelector(".export-container button");
             exportButton.disabled = true;
             exportButton.textContent = "Exporting...";
             
@@ -717,7 +729,8 @@
                     body: JSON.stringify({
                         original_text: persianText,
                         edited_text: editedText,
-                        combined_view: combinedView
+                        combined_view: combinedView,
+                        translation_text: translatedText
                     }),
                 });
                 
