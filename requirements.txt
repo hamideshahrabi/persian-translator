@@ -10,3 +10,4 @@ backoff==2.2.1
 pydantic==2.6.1
 psutil==7.0.0
 python-docx==0.8.11
+beautifulsoup4==4.12.3
