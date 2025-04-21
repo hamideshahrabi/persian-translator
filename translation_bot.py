@@ -778,16 +778,6 @@ def create_diff_html(original: str, edited: str) -> str:
         <br>
         📊 تعداد کلمات متن ویرایش شده: <span class="word-count">{edit_word_count}</span>
         <br>
-        📊 تفاوت تعداد کلمات: <span class="word-count">{word_diff:+d}</span>
-        <br>
-        <br>
-        🔄 تعداد کل تغییرات: {total_changes}
-        <br>
-        🔀 جایگزینی‌ها: {changes['replacements']}
-        <br>
-        ❌ حذف‌ها: {changes['deletions']}
-        <br>
-        ✅ اضافه‌ها: {changes['insertions']}
     </div>
     """)
     
@@ -1059,6 +1049,7 @@ async def export_to_word(request: Request):
         original_text = data.get("original_text", "")
         edited_text = data.get("edited_text", "")
         combined_view_html = data.get("combined_view", "")
+        translation_text = data.get("translation_text", "")  # Get translation text from request
         
         # Create a new Word document
         doc = Document()
@@ -1205,9 +1196,6 @@ async def export_to_word(request: Request):
         
         # Create comparison for each chunk
         for i in range(max(len(original_chunks), len(edited_chunks))):
-            # Add chunk number
-            doc.add_heading(f'Chunk {i + 1}', level=2)
-            
             # Original chunk
             doc.add_heading('Original', level=3)
             p = doc.add_paragraph()
@@ -1229,6 +1217,14 @@ async def export_to_word(request: Request):
             
             # Add spacing between chunks
             doc.add_paragraph()
+        
+        # Add translation section if available
+        if translation_text:
+            doc.add_heading('English Translation', level=1)
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.LEFT  # Left alignment for English text
+            run = p.add_run(translation_text)
+            run.font.size = Pt(12)
         
         # Save the document to a BytesIO object
         doc_io = BytesIO()
